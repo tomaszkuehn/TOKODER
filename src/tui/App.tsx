@@ -19,7 +19,14 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
   const draftRef = useRef("");
   const [busy, setBusy] = useState(false);
   const [pendingTool, setPendingTool] = useState<{ name: string; args: any } | null>(null);
-  const [wizard, setWizard] = useState<null | { step: "kind" | "model" | "id"; kind?: "local" | "cloud"; models?: string[]; model?: string; suggestedId?: string }>(null);
+  const [wizard, setWizard] = useState<null | {
+    step: "kind" | "key" | "model" | "id" | "rm";
+    kind?: "local" | "cloud";
+    models?: string[];
+    model?: string;
+    suggestedId?: string;
+    rmId?: string;
+  }>(null);
   const approvalRef = useRef<((d: ToolDecision) => void) | null>(null);
   const alwaysRef = useRef<Set<string>>(new Set());
   const [tokenStats, setTokenStats] = useState<Record<string, { sent: number; recv: number }>>({});
@@ -250,13 +257,11 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
         saveConfig(cur); reloadCfg(); pushSystem(`Added ${id}. Now: :models key ${id} <API_KEY>  and  :models test ${id}`); return true;
       }
       if (["rm", "remove", "del"].includes(sub)) {
-        const id = args[1]; if (!id) { pushSystem("Usage: :models rm <id>"); return true; }
-        const idx = cur.models.findIndex((m) => m.id === id);
-        if (idx === -1) { pushSystem(`Not found: ${id}`); return true; }
-        cur.models.splice(idx, 1);
-        if (cur.defaultModel === id) cur.defaultModel = cur.models[0]?.id ?? "";
-        if (modelId === id) setModelId(cur.defaultModel);
-        saveConfig(cur); reloadCfg(); pushSystem(`Removed ${id}`); return true;
+        const id = args[1];
+        if (!id) { setWizard({ step: "rm", rmId: undefined, models: cur.models.map((m) => m.id) }); pushSystem(`USUWANIE MODELU — które ID?\n${cur.models.map((m, i) => `${String(i + 1).padStart(2)}. ${m.id} (${m.provider}/${m.model})`).join("\n")}\n\nWpisz numer lub nazwę ID.`); return true; }
+        if (!cur.models.find((m) => m.id === id)) { pushSystem(`Not found: ${id}`); return true; }
+        setWizard({ step: "rm", rmId: id });
+        pushSystem(`Usunąć model "${id}"? [T]ak / [N]ie`); return true;
       }
       if (sub === "default") {
         const id = args[1];
@@ -297,7 +302,12 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
 
   const wizardPrompt = (w: NonNullable<typeof wizard>): string => {
     if (w.step === "kind") return "DODAWANIE MODELU — 1: Ollama lokalny (localhost:11434), 2: Ollama Cloud (ollama.com)";
+    if (w.step === "key") {
+      const has = process.env.OLLAMA_API_KEY;
+      return `KLUCZ API dla Ollama Cloud${has ? ` (jest ${maskKey(has)} — Enter = zostaw)` : " (brak — wklej klucz z ollama.com/settings/keys, Enter = pomiń)"}`;
+    }
     if (w.step === "model") return `Wybierz model — numer z listy lub wpisz nazwę ręcznie (${w.models?.length ?? 0} znalezionych, "n" = własna nazwa)`;
+    if (w.step === "rm") return w.rmId === undefined ? "Wpisz numer lub ID modelu do usunięcia" : `Potwierdź usunięcie "${w.rmId}" — t/n`;
     return `ID dla ${w.model} (Enter = "${w.suggestedId}")`;
   };
 
@@ -308,6 +318,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
     if (w.step === "kind") {
       if (v !== "1" && v !== "2") { pushSystem("Wpisz 1 (lokalny) lub 2 (cloud)."); return; }
       const kind = v === "1" ? "local" as const : "cloud" as const;
+      if (kind === "cloud") { setWizard({ ...w, step: "key", kind }); return; }
       setWizard({ ...w, step: "model", kind, models: [] });
       try {
         const models = (await listOllamaModels(kind)).map((m) => m.name);
@@ -319,13 +330,51 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       }
       return;
     }
+    if (w.step === "key") {
+      if (v && !v.startsWith(":")) setEnvKey("OLLAMA_API_KEY", v);
+      pushSystem(v ? `Klucz zapisany do .env → OLLAMA_API_KEY (${maskKey(v)})` : "Pominięto klucz (ustawisz później: :models key <id> <KEY>).");
+      setWizard({ ...w, step: "model", models: [] });
+      try {
+        const models = (await listOllamaModels("cloud")).map((m) => m.name);
+        setWizard({ step: "model", kind: "cloud", models });
+        pushSystem(`Ollama Cloud — dostępne modele:\n${models.map((m, i) => `${String(i + 1).padStart(2)}. ${m}`).join("\n")}\n\nWpisz numer, nazwę modelu lub "n" (własna).`);
+      } catch (e: any) {
+        setWizard(null);
+        pushError(`Nie udało się pobrać listy modeli: ${e.message}`);
+      }
+      return;
+    }
     if (w.step === "model") {
       let model: string | undefined;
       if (/^\d+$/.test(v)) model = w.models?.[parseInt(v, 10) - 1];
       else if (v.toLowerCase() === "n") { pushSystem('Wpisz pełną nazwę modelu (np. "qwen3-coder:480b").'); return; }
       else model = v;
       if (!model) { pushSystem(`Nie ma takiego numeru (1-${w.models?.length ?? 0}).`); return; }
-      setWizard({ ...w, step: "id", model, suggestedId: suggestFreeId(w.model ?? "", cfg.models) });
+      setWizard({ ...w, step: "id", model, suggestedId: suggestFreeId(model, cfg.models) });
+      return;
+    }
+    if (w.step === "rm") {
+      if (w.rmId === undefined) {
+        let id: string | undefined;
+        if (/^\d+$/.test(v)) id = w.models?.[parseInt(v, 10) - 1];
+        else id = v;
+        if (!id || !w.models?.includes(id)) { pushSystem(`Nie ma takiego modelu (1-${w.models?.length ?? 0} lub nazwa ID).`); return; }
+        setWizard({ ...w, rmId: id });
+        pushSystem(`Usunąć model "${id}"? [T]ak / [N]ie`);
+        return;
+      }
+      if (v.toLowerCase() === "t") { /* fallthrough do usuwania */ }
+      else if (v.toLowerCase() === "n") { setWizard(null); pushSystem("Anulowano."); return; }
+      else { pushSystem('Wpisz "t" (usuń) lub "n" (anuluj).'); return; }
+      const cur = reloadCfg();
+      const idx = cur.models.findIndex((m) => m.id === w.rmId);
+      if (idx === -1) { setWizard(null); pushSystem(`Nie znaleziono: ${w.rmId}`); return; }
+      const removed = cur.models.splice(idx, 1)[0];
+      if (cur.defaultModel === removed.id) cur.defaultModel = cur.models[0]?.id ?? "";
+      saveConfig(cur); reloadCfg();
+      if (modelId === removed.id) setModelId(cur.defaultModel);
+      setWizard(null);
+      pushSystem(`✓ Usunięto ${removed.id} (${removed.provider}/${removed.model})${cur.defaultModel ? `\nDefault: ${cur.defaultModel}` : "\n⚠ Brak modeli w konfiguracji!"}`);
       return;
     }
     if (w.step === "id") {
