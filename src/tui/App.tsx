@@ -71,6 +71,9 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
   const usedModels = Object.keys(tokenStats);
   const curTok = tokenStats[modelId] ?? { sent: 0, recv: 0 };
   const totTok = usedModels.reduce((a, id) => ({ sent: a.sent + tokenStats[id].sent, recv: a.recv + tokenStats[id].recv }), { sent: 0, recv: 0 });
+  const ctxWindow = active.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+  const ctxUsed = curTok.sent + curTok.recv;
+  const ctxPct = Math.min(999, Math.round((ctxUsed / ctxWindow) * 100));
 
   const reloadCfg = () => {
     const c = loadConfig();
@@ -780,10 +783,13 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
       </Box>
 
       <Box flexShrink={0} borderStyle="round" borderColor={isCmd ? "yellow" : lastErr ? "red" : "magenta"} marginTop={1} paddingX={1} flexDirection="column">
-        <Box flexDirection="row" flexWrap="wrap" width={innerW}>
-          <Text color={wizard ? "cyan" : isCmd ? "yellow" : "magenta"} bold>{wizard ? "⚙" : isCmd ? ":" : "›"} </Text>
-          <Text color={wizard ? "cyan" : busy ? "gray" : isCmd ? "yellow" : "yellow"} wrap="wrap">{wizard ? wizardPrompt(wizard) : busy ? (pendingTool ? "" : "(busy…)") : isCmd ? input.slice(1) : input}{suggestion && !busy && !wizard ? <Text dimColor>{suggestion}</Text> : null}</Text>
-          {!wizard && <Text backgroundColor={busy ? undefined : isCmd ? "yellow" : "white"} color={isCmd ? "black" : "white"}> </Text>}
+        <Box flexDirection="row" justifyContent="space-between" width={innerW}>
+          <Box flexDirection="row" flexWrap="wrap">
+            <Text color={wizard ? "cyan" : isCmd ? "yellow" : "magenta"} bold>{wizard ? "⚙" : isCmd ? ":" : "›"} </Text>
+            <Text color={wizard ? "cyan" : busy ? "gray" : isCmd ? "yellow" : "yellow"} wrap="wrap">{wizard ? wizardPrompt(wizard) : busy ? (pendingTool ? "" : "(busy…)") : isCmd ? input.slice(1) : input}{suggestion && !busy && !wizard ? <Text dimColor>{suggestion}</Text> : null}</Text>
+            {!wizard && <Text backgroundColor={busy ? undefined : isCmd ? "yellow" : "white"} color={isCmd ? "black" : "white"}> </Text>}
+          </Box>
+          <Text dimColor>{ctxUsed.toLocaleString("en-US")}/{Math.round(ctxWindow / 1000)}k tok ({ctxPct}%)</Text>
         </Box>
         {wizard && <Text dimColor wrap="wrap">→ {input || "(type answer)"} ▌   (:q aborts)</Text>}
         {pendingAccess && (
