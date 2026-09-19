@@ -110,7 +110,7 @@ scripts/tocoder.bat "prompt"
 | `:exit`, `:q`, `:quit` | exit (transcript dumped) |
 | `:compact [instruction]` | compact history — mode-dependent (see below); instruction focuses the summary |
 | `:compact-mode <reduce\|balance\|value>` | compact strategy (default `balance`), persisted in config |
-| `:compact-auto <on\|off\|10-100>` | auto-compact trigger at N% of model context window (default 70%) |
+| `:compact-auto <on\|off\|10-100\|tokens <n>>` | auto-compact fires at **whichever comes first**: N% of model context window (default 70%) or absolute token limit (`:compact-auto tokens 40000`; 0 = off) |
 | `:agents` | show `AGENTS.md` with line numbers + token cost per prompt |
 | `:agents init` / `:init` | create `AGENTS.md` with default instructions |
 | `:agents edit` | open in `$EDITOR` (default notepad) |
@@ -160,7 +160,7 @@ History compaction replaces old turns with a model-generated summary + keeps rec
 | `value` | structured extraction: GOAL/DECISIONS/PROJECT FACTS/FILES CHANGED/OPEN THREADS/NEXT STEPS + last 8 turns verbatim | 1 call |
 
 - `:compact <instruction>` — steer the summary, e.g. `:compact keep the implementation plan`, `:compact focus on decisions and file paths`, `:compact keep open threads and next steps`.
-- **Auto-compact**: fires when estimated history tokens exceed `thresholdPercent` of the model context window. Set a model's window with `:models set <id> contextWindow <tokens>` (default 128000).
+- **Auto-compact**: fires when estimated history tokens exceed **whichever limit comes first** — `thresholdPercent` of the model context window **or** the absolute `maxTokens` limit. Set a model's window with `:models set <id> contextWindow <tokens>` (default 128000). Config: `"compact": { "autoTrigger": true, "thresholdPercent": 70, "maxTokens": 40000 }` (`maxTokens: 0` = percent only).
 - Config: `"compact": { "mode": "balance", "autoTrigger": true, "thresholdPercent": 70 }` in `tokoder.config.json`.
 
 ## Access Control (ACL)

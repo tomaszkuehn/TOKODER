@@ -17,10 +17,13 @@ export type CompactMode = "reduce" | "balance" | "value";
 export type CompactConfig = {
   mode: CompactMode;
   autoTrigger: boolean;
+  /** compact when estimated history tokens exceed this % of the model context window */
   thresholdPercent: number;
+  /** compact when estimated history tokens exceed this absolute limit (0 = disabled) */
+  maxTokens: number;
 };
 
-export const COMPACT_DEFAULTS: CompactConfig = { mode: "balance", autoTrigger: true, thresholdPercent: 70 };
+export const COMPACT_DEFAULTS: CompactConfig = { mode: "balance", autoTrigger: true, thresholdPercent: 70, maxTokens: 0 };
 export const DEFAULT_CONTEXT_WINDOW = 128000;
 
 // legacy Polish mode names → English
@@ -32,7 +35,17 @@ export function normalizeCompact(c?: Partial<CompactConfig>): CompactConfig {
     mode,
     autoTrigger: c?.autoTrigger ?? COMPACT_DEFAULTS.autoTrigger,
     thresholdPercent: typeof c?.thresholdPercent === "number" ? c!.thresholdPercent! : COMPACT_DEFAULTS.thresholdPercent,
+    maxTokens: typeof c?.maxTokens === "number" && c!.maxTokens! >= 0 ? c!.maxTokens! : COMPACT_DEFAULTS.maxTokens,
   };
+}
+
+/** auto-compact fires when EITHER limit is exceeded (percent of context window OR absolute maxTokens) */
+export function compactLimit(cc: CompactConfig, contextWindow: number): { limit: number; reason: "percent" | "tokens" | "both" } {
+  const pctLimit = Math.round((contextWindow * cc.thresholdPercent) / 100);
+  const tokLimit = cc.maxTokens > 0 ? cc.maxTokens : Infinity;
+  const limit = Math.min(pctLimit, tokLimit);
+  const reason = tokLimit < pctLimit ? "tokens" : pctLimit < tokLimit ? "percent" : tokLimit !== Infinity ? "both" : "percent";
+  return { limit, reason };
 }
 
 export type TokoderConfig = {

@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef, useMemo } from "react";
 import { Box, Text, useInput, useApp, useStdout } from "ink";
 import { runAgent, testConnection, type ToolDecision, type AccessDecision } from "../core/agent.js";
-import { loadConfig, saveConfig, normalizeCompact, globalConfigPath, localConfigPath, DEFAULT_CONTEXT_WINDOW } from "../core/config.js";
+import { loadConfig, saveConfig, normalizeCompact, compactLimit, globalConfigPath, localConfigPath, DEFAULT_CONTEXT_WINDOW } from "../core/config.js";
 import { compactHistory, estimateHistoryTokens, COMPACT_MODES, type CompactMode } from "../core/compact.js";
 import { countLOC, detectEnvs, formatDuration, estimateTokens } from "../utils/stats.js";
 import { setEnvKey, maskKey } from "../utils/env.js";
@@ -273,7 +273,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       const cc = normalizeCompact(cur.compact);
       const m = args[0]?.toLowerCase();
       if (!m) {
-        pushSystem(`Compact mode: ${cc.mode} | auto: ${cc.autoTrigger ? `${cc.thresholdPercent}% of window` : "off"}\n  reduce  — hard-trim history, 0 tokens, instant\n  balance — LLM summary + last 4 turns verbatim (default)\n  value   — structured extraction: GOAL/DECISIONS/FACTS/FILES/THREADS/STEPS + 8 turns\nChange: :compact-mode <reduce|balance|value>`);
+        pushSystem(`Compact mode: ${cc.mode} | auto: ${cc.autoTrigger ? `${cc.thresholdPercent}%` + (cc.maxTokens > 0 ? `/max ${cc.maxTokens} tok` : "") : "off"}\n  reduce  — hard-trim history, 0 tokens, instant\n  balance — LLM summary + last 4 turns verbatim (default)\n  value   — structured extraction: GOAL/DECISIONS/FACTS/FILES/THREADS/STEPS + 8 turns\nChange: :compact-mode <reduce|balance|value>`);
         return true;
       }
       const mapped = ({ redukcja: "reduce", balans: "balance", wartosc: "value" } as Record<string, string>)[m] ?? m;
@@ -289,19 +289,28 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       const a = args[0]?.toLowerCase();
       if (!a) {
         const ctx = active.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
-        pushSystem(`Auto-compact: ${cc.autoTrigger ? `ON @ ${cc.thresholdPercent}% of window (${Math.round((ctx * cc.thresholdPercent) / 100)} tok of ${ctx})` : "OFF"}\nChange: :compact-auto <on|off|percent 10-100>`);
+        const { limit, reason } = compactLimit(cc, ctx);
+        const parts = [`${cc.thresholdPercent}% of ${ctx} = ${Math.round((ctx * cc.thresholdPercent) / 100)} tok`];
+        if (cc.maxTokens > 0) parts.push(`max ${cc.maxTokens.toLocaleString("en-US")} tok (binding: ${reason})`);
+        pushSystem(`Auto-compact: ${cc.autoTrigger ? `ON — fires at whichever comes first:\n  ${parts.join("\n  ")}` : "OFF"}\nEffective limit: ${limit.toLocaleString("en-US")} tok\nChange: :compact-auto <on|off|percent 10-100|tokens <n>>`);
         return true;
       }
       if (["on", "tak", "yes"].includes(a)) cur.compact = { ...cc, autoTrigger: true };
       else if (["off", "nie", "no"].includes(a)) cur.compact = { ...cc, autoTrigger: false };
-      else if (/^\d+$/.test(a)) {
+      else if (a === "tokens") {
+        const n = parseInt(args[1] ?? "", 10);
+        if (!n || n < 1000) { pushSystem("Token limit: >= 1000 (0 disables). Usage: :compact-auto tokens <n>"); return true; }
+        cur.compact = { ...cc, autoTrigger: true, maxTokens: n };
+      } else if (/^\d+$/.test(a)) {
         const p = parseInt(a, 10);
         if (p < 10 || p > 100) { pushSystem("Percent: 10-100."); return true; }
         cur.compact = { ...cc, autoTrigger: true, thresholdPercent: p };
-      } else { pushSystem("Usage: :compact-auto <on|off|percent>"); return true; }
+      } else { pushSystem("Usage: :compact-auto <on|off|percent|tokens <n>>"); return true; }
       saveConfig(cur); reloadCfg();
       const nc = normalizeCompact(reloadCfg().compact);
-      pushSystem(`✓ Auto-compact: ${nc.autoTrigger ? `ON @ ${nc.thresholdPercent}%` : "OFF"} (saved to ${localConfigPath() ?? globalConfigPath()})`);
+      const ctx2 = active.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+      const lim = compactLimit(nc, ctx2);
+      pushSystem(`✓ Auto-compact: ${nc.autoTrigger ? `ON @ ${nc.thresholdPercent}%` + (nc.maxTokens > 0 ? ` / max ${nc.maxTokens.toLocaleString("en-US")} tok` : "") + ` → effective ${lim.limit.toLocaleString("en-US")} tok (${lim.reason})` : "OFF"} (saved to ${localConfigPath() ?? globalConfigPath()})`);
       return true;
     }
     if (["compact", "clear", "compress"].includes(c)) {
@@ -445,7 +454,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       pushSystem(r.created ? `✓ Created ${r.path} with default content (≈${tok} tok sent with every prompt)` : `${r.path} already exists — see :agents`);
       return true;
     }
-    if (["help", "h", "?"].includes(c)) { pushSystem(`Commands:\n:exit / :q — exit\n:compact [instruction] — compact history (mode: :compact-mode)\n  examples: :compact keep the implementation plan\n             :compact focus on decisions and file paths\n             :compact keep open threads and next steps\n:compact-mode <reduce|balance|value> — compact strategy\n:compact-auto <on|off|percent> — auto-trigger at % of context window\n:agents — project instructions file (AGENTS.md), sent with every prompt\n  :agents init | edit | add <text> | rm <line>\n:init — create AGENTS.md with defaults\n:key — set Ollama Cloud API key\n:models — list | :models add/rm — wizards | :models test <id>\n  :models set <id> contextWindow <tok> — window for auto-compact\n:allow <path> / :deny <path> — sandbox\nPgUp/PgDn scroll`); return true; }
+    if (["help", "h", "?"].includes(c)) { pushSystem(`Commands:\n:exit / :q — exit\n:compact [instruction] — compact history (mode: :compact-mode)\n  examples: :compact keep the implementation plan\n             :compact focus on decisions and file paths\n             :compact keep open threads and next steps\n:compact-mode <reduce|balance|value> — compact strategy\n:compact-auto <on|off|percent|tokens <n>> — auto-trigger: % of context window OR absolute token limit, whichever comes first\n:agents — project instructions file (AGENTS.md), sent with every prompt\n  :agents init | edit | add <text> | rm <line>\n:init — create AGENTS.md with defaults\n:key — set Ollama Cloud API key\n:models — list | :models add/rm — wizards | :models test <id>\n  :models set <id> contextWindow <tok> — window for auto-compact\n:allow <path> / :deny <path> — sandbox\nPgUp/PgDn scroll`); return true; }
     pushSystem(`Unknown command ":${c}". Try :help`); return true;
   };
 
@@ -625,9 +634,10 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
         if (cc.autoTrigger) {
           const ctx = active.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
           const used = estimateHistoryTokens(historyRef.current);
-          const limit = Math.round((ctx * cc.thresholdPercent) / 100);
+          const { limit, reason } = compactLimit(cc, ctx);
           if (used > limit) {
-            pushSystem(`⚙ Auto-compact: ${used} tok > ${limit} (${cc.thresholdPercent}% of ${ctx})`);
+            const why = reason === "tokens" ? `max ${cc.maxTokens.toLocaleString("en-US")} tok` : `${cc.thresholdPercent}% of ${ctx} = ${Math.round((ctx * cc.thresholdPercent) / 100)} tok`;
+            pushSystem(`⚙ Auto-compact: ${used} tok > ${limit} tok (${why})`);
             await runCompact();
           }
         }
@@ -683,7 +693,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
           <Text><Text color="cyan">LOC: </Text><Text>{loc === null ? "…" : loc.toLocaleString("en-US")}</Text></Text>
           <Text><Text color="cyan">Time: </Text><Text>{formatDuration(elapsed)}</Text></Text>
           <Text><Text color="cyan">Env: </Text>{envs.map((e, i) => <Text key={e.label} color={e.ok ? "green" : "gray"}>{i ? " " : ""}{e.ok ? "✓" : "✗"}{e.label}</Text>)}</Text>
-          <Text><Text color="cyan">Compact: </Text><Text bold>{compactCfg.mode}</Text>{compactCfg.autoTrigger ? <Text dimColor> (auto {compactCfg.thresholdPercent}%)</Text> : <Text dimColor> (auto off)</Text>}</Text>
+          <Text><Text color="cyan">Compact: </Text><Text bold>{compactCfg.mode}</Text>{compactCfg.autoTrigger ? <Text dimColor>{compactCfg.maxTokens > 0 ? ` (auto ${compactCfg.thresholdPercent}%/max ${compactCfg.maxTokens >= 1000 ? Math.round(compactCfg.maxTokens / 1000) + "k" : compactCfg.maxTokens})` : ` (auto ${compactCfg.thresholdPercent}%)`}</Text> : <Text dimColor> (auto off)</Text>}</Text>
         </Box>
         {lastErr && <Text color="red" wrap="wrap">✗ {lastErr}</Text>}
       </Box>
