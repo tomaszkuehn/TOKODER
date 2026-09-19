@@ -11,21 +11,50 @@ export const bashSchema = z.object({
   timeout: z.number().optional().default(30000),
 });
 
+let wslCache: boolean | null = null;
+async function hasWsl(): Promise<boolean> {
+  if (wslCache !== null) return wslCache;
+  if (process.platform !== "win32") { wslCache = false; return false; }
+  try {
+    const { execSync } = await import("node:child_process");
+    execSync("wsl --version", { stdio: "ignore", timeout: 2000 });
+    wslCache = true;
+  } catch { wslCache = !!process.env.WSL_DISTRO_NAME; }
+  return wslCache!;
+}
+
+function isLinuxish(cmd: string): boolean {
+  return /(^|\s)(mkdir -p|ls -la|chmod|chown|touch\s+\/|cat\s+\/|echo.*>\s*\/|~\/|\/tmp\/|\/home\/|\/opt\/)/.test(cmd) || /^\s*\//.test(cmd.trim());
+}
+
 export async function bashTool({ command, workdir, timeout }: z.infer<typeof bashSchema>) {
   if (workdir && !isAllowed(workdir)) return `Error: DENIED workdir outside project "${getProjectRoot()}": ${workdir} — :allow ${workdir}`;
-  if (/(?:\.\.\/|\.\.\\|[A-Z]:\\|\/tmp\/|\/home\/)/i.test(command) && /[<>|]/.test(command)) {
-    // heuristic for suspicious redirections outside project
+  let cmd = command;
+  let cwd = workdir ?? process.cwd();
+  const onWin = process.platform === "win32";
+  const linuxish = isLinuxish(cmd);
+  if (onWin && linuxish && (await hasWsl())) {
+    const wslCwd = cwd.replace(/^([A-Z]):\\/i, (_, d) => `/mnt/${d.toLowerCase()}/`).replace(/\\/g, "/");
+    cmd = `wsl bash -c ${JSON.stringify(`cd ${JSON.stringify(wslCwd)}; ${command}`)}`;
+    cwd = undefined as any;
   }
   try {
-    const { stdout, stderr } = await execAsync(command, {
-      cwd: workdir ?? process.cwd(),
+    const { stdout, stderr } = await execAsync(cmd, {
+      cwd,
       timeout,
       maxBuffer: 1024 * 1024,
       windowsHide: true,
+      shell: onWin && !linuxish ? "powershell.exe" : undefined,
     });
     const out = [stdout, stderr].filter(Boolean).join("\n").slice(0, 30000);
     return out || "(no output)";
   } catch (e: any) {
-    return `Error (exit ${e.code ?? "?"}): ${(e.stdout ?? "") + (e.stderr ?? e.message)}`.slice(0, 30000);
+    const base = `Error (exit ${e.code ?? "?"}): ${(e.stdout ?? "") + (e.stderr ?? e.message)}`.slice(0, 28000);
+    const hint = onWin && linuxish
+      ? `\nHint: You are on Windows (${process.platform}) but sent Linux command. WSL ${await hasWsl() ? "is available — rerun via wsl bash" : "not found — use Windows paths or install WSL"}.`
+      : onWin
+      ? `\nHint: You are on Windows. Use PowerShell syntax or WSL bash.`
+      : "";
+    return (base + hint).slice(0, 30000);
   }
 }
