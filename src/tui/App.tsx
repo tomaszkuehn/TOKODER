@@ -79,25 +79,44 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
   const chromeH = headerH + statusH + inputH + 5;
   const outputH = Math.max(6, rows - chromeH);
   const innerW = Math.max(20, cols - 6);
-  const estimateLines = (t: string) => Math.max(1, Math.ceil((t.length || 1) / innerW) + 1);
+  const viewportH = Math.max(1, outputH - 3); // borders(2) + title(1)
 
-  const visible = useMemo(() => {
-    let used = 2;
-    const out: typeof messages = [];
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const need = estimateLines(messages[i].text);
-      if (used + need > outputH - scroll) continue;
-      if (used + need + scroll > outputH) break;
-      out.unshift(messages[i]);
-      used += need;
-      if (used >= outputH) break;
+  const roleLabel = (r: string) => (r === "user" ? "› TY:" : r === "system" ? "◆ SYS:" : r === "error" ? "✗ ERR:" : "● AI:");
+
+  // flat line model: label line + wrapped text lines per message
+  const flatLines = useMemo(() => {
+    const arr: { role: "user" | "assistant" | "system" | "error"; text: string; isLabel: boolean }[] = [];
+    messages.forEach((m, i) => {
+      if (m.role === "user" && arr.length) arr.push({ role: m.role, text: "", isLabel: false });
+      arr.push({ role: m.role, text: roleLabel(m.role), isLabel: true });
+      const src = m.text || (busy && i === messages.length - 1 ? "…" : "");
+      if (!src) { arr.push({ role: m.role, text: "", isLabel: false }); return; }
+      for (const ln of src.split("\n")) {
+        if (!ln) { arr.push({ role: m.role, text: "", isLabel: false }); continue; }
+        for (let j = 0; j < ln.length; j += innerW) arr.push({ role: m.role, text: ln.slice(j, j + innerW), isLabel: false });
+      }
+    });
+    return arr;
+  }, [messages, innerW, busy]);
+
+  const maxScroll = Math.max(0, flatLines.length - viewportH);
+  const startIdx = Math.max(0, flatLines.length - viewportH - Math.min(scroll, maxScroll));
+  const visibleLines = flatLines.slice(startIdx, startIdx + viewportH);
+
+  const scrollChars = useMemo(() => {
+    const track: { ch: string; thumb: boolean }[] = [];
+    if (flatLines.length <= viewportH) return track;
+    const thumbSize = Math.max(1, Math.floor((viewportH * viewportH) / flatLines.length));
+    const thumbPos = Math.round((startIdx / Math.max(1, maxScroll)) * (viewportH - thumbSize));
+    for (let r = 0; r < viewportH; r++) {
+      const thumb = r >= thumbPos && r < thumbPos + thumbSize;
+      track.push({ ch: thumb ? "█" : "│", thumb });
     }
-    if (out.length === 0 && messages.length > 0) {
-      const last = messages[messages.length - 1];
-      out.push({ ...last, text: last.text.slice(-(outputH * innerW)) });
-    }
-    return out;
-  }, [messages, outputH, scroll, innerW]);
+    return track;
+  }, [flatLines.length, viewportH, startIdx, maxScroll]);
+
+  const moreAbove = maxScroll > 0 && scroll < maxScroll;
+  const moreBelow = scroll > 0;
 
   const cycleModel = (dir: 1 | -1) => {
     const idx = cfg.models.findIndex((m) => m.id === modelId);
@@ -255,7 +274,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
   };
 
   useInput(async (char, key) => {
-    if (key.pageUp) { setScroll((s) => s + 5); return; }
+    if (key.pageUp) { setScroll((s) => Math.min(maxScroll, s + 5)); return; }
     if (key.pageDown) { setScroll((s) => Math.max(0, s - 5)); return; }
     if (key.escape || (key.ctrl && char === "c")) exit();
     if (key.tab) {
@@ -270,8 +289,8 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
         if (completed !== prompt) prompt = completed;
       }
       const wasCmd = prompt.startsWith(":");
-      if (await handleCommand(prompt)) { if (!wasCmd) { setCmdHistory((h) => [...h, prompt]); } return; }
-      setCmdHistory((h) => [...h, prompt]);
+      if (await handleCommand(prompt)) { setCmdHistory((h) => [...h, prompt].slice(-100)); return; }
+      setCmdHistory((h) => [...h, prompt].slice(-100));
       const isChoice = /^\s*[1-3]\s*$/.test(prompt) && historyRef.current.length > 0;
       const effectivePrompt = isChoice ? `My choice is "${prompt.trim()}". Continue with option ${prompt.trim()} from your last list.` : prompt;
       setMessages((m) => [...m, { role: "user", text: prompt }]);
@@ -303,7 +322,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
           return copy;
         });
       } finally { countLOC().then(setLoc); setBusy(false); setScroll(0); }
-    } else if (key.backspace || key.delete) { setHistIdx(-1); setInput((s) => s.slice(0, -1)); }
+    } else if (key.backspace || key.delete) { setInput((s) => s.slice(0, -1)); }
     else if (key.upArrow) {
       if (cmdHistory.length === 0) return;
       if (histIdx === -1) { draftRef.current = input; const idx = cmdHistory.length - 1; setHistIdx(idx); setInput(cmdHistory[idx]); }
@@ -314,14 +333,12 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       if (histIdx === cmdHistory.length - 1) { setHistIdx(-1); setInput(draftRef.current); }
       else { const idx = histIdx + 1; setHistIdx(idx); setInput(cmdHistory[idx]); }
       return;
-    } else if (!key.ctrl && !key.meta && char) { if (histIdx !== -1) setHistIdx(-1); setInput((s) => s + char); }
+    } else if (!key.ctrl && !key.meta && char) { setInput((s) => s + char); }
   });
 
   const active = cfg.models.find((m) => m.id === modelId)!;
   const isCmd = input.startsWith(":");
   const suggestion = getSuggestion(input);
-  const moreAbove = messages.length > visible.length && scroll < messages.length;
-  const moreBelow = scroll > 0;
 
   return (
     <Box flexDirection="column" width={cols} height={rows} paddingX={1}>
@@ -342,15 +359,22 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       </Box>
 
       <Box flexGrow={1} flexShrink={1} flexDirection="column" overflow="hidden" borderStyle="round" borderColor="green" marginTop={1} paddingX={1} height={outputH}>
-        <Box flexShrink={0}><Text bold color="green">● ODPOWIEDŹ MODELU {busy ? "(pisze…)" : ""}</Text><Text dimColor>{moreAbove ? " ↑more" : ""}{moreBelow ? " ↓more" : ""} {scroll ? `(scroll:${scroll})` : ""}</Text></Box>
-        {visible.length === 0 && messages.length === 0 && !busy && <Text dimColor> Brak wiadomości — :help</Text>}
-        {visible.length === 0 && messages.length > 0 && <Text dimColor> — scrolled — PgDn to bottom — {messages.length} msgs</Text>}
-        {visible.map((m, i) => (
-          <Box key={i} flexDirection="column" flexShrink={0} marginTop={m.role === "user" ? 1 : 0} width={innerW}>
-            <Text color={m.role === "user" ? "blue" : m.role === "system" ? "yellow" : m.role === "error" ? "red" : "white"} bold wrap="wrap">{m.role === "user" ? "› TY:" : m.role === "system" ? "◆ SYS:" : m.role === "error" ? "✗ ERR:" : "● AI:"}</Text>
-            <Text color={m.role === "error" ? "red" : m.role === "system" ? "yellow" : undefined} wrap="wrap">{m.text || (busy ? "…" : "")}</Text>
+        <Box flexShrink={0}><Text bold color="green">● ODPOWIEDŹ MODELU {busy ? "(pisze…)" : ""}</Text><Text dimColor>{moreAbove ? " ↑more" : ""}{moreBelow ? " ↓end" : ""} {flatLines.length > viewportH ? `[${startIdx + 1}-${startIdx + visibleLines.length}/${flatLines.length} linii]` : ""}</Text></Box>
+        <Box flexDirection="row">
+          <Box flexDirection="column" width={innerW - 1} flexShrink={0}>
+            {visibleLines.length === 0 && messages.length === 0 && !busy && <Text dimColor> Brak wiadomości — :help</Text>}
+            {visibleLines.map((ln, i) => (
+              <Text key={i} color={ln.role === "user" ? "blue" : ln.role === "system" ? "yellow" : ln.role === "error" ? "red" : ln.isLabel ? "white" : undefined} bold={ln.isLabel} wrap="truncate">{ln.text}</Text>
+            ))}
           </Box>
-        ))}
+          {scrollChars.length > 0 && (
+            <Box flexDirection="column" width={1} flexShrink={0}>
+              {scrollChars.map((c, i) => (
+                <Text key={i} color={c.thumb ? "green" : "gray"}>{c.ch}</Text>
+              ))}
+            </Box>
+          )}
+        </Box>
       </Box>
 
       <Box flexShrink={0} borderStyle="round" borderColor={isCmd ? "yellow" : lastErr ? "red" : "magenta"} marginTop={1} paddingX={1} flexDirection="column">
@@ -362,7 +386,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
         {suggestion && !busy && <Box><Text dimColor>↹Tab → :{input.slice(1) + suggestion}  ↵Enter executes</Text></Box>}
         {input.length > innerW && <Box><Text dimColor>↔ {input.length}/{innerW} chars — wraps</Text></Box>}
       </Box>
-      <Box flexShrink={0}><Text dimColor wrap="wrap">↑↓ history {histIdx >= 0 ? `(${histIdx + 1}/${cmdHistory.length})` : ""} | PgUp/PgDn scroll | :models test {modelId} | {visible.length}/{messages.length} msgs{suggestion ? ` | :${input.slice(1) + suggestion}` : ""}</Text></Box>
+      <Box flexShrink={0}><Text dimColor wrap="wrap">↑↓ history {histIdx >= 0 ? `(${histIdx + 1}/${cmdHistory.length})` : ""} (edytowalna) | PgUp/PgDn scroll | :models test {modelId} | {visibleLines.length}/{flatLines.length} linii{suggestion ? ` | :${input.slice(1) + suggestion}` : ""}</Text></Box>
     </Box>
   );
 }
