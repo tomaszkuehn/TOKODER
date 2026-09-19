@@ -12,7 +12,7 @@ export async function readTool({ path, offset, limit }: z.infer<typeof readSchem
   const chk = checkAccess(path, "read");
   if (!chk.ok) return chk.reason === "system"
     ? `Error: DENIED — "${path}" is inside Windows system folder.`
-    : `Error: PENDING-APPROVAL read outside project "${getProjectRoot()}": ${path} (read default: TAK via rules; ask user or :acl)`;
+    : `Error: PENDING-APPROVAL read outside project "${getProjectRoot()}": ${path} (read default: YES via rules; ask user or :acl)`;
   try {
     const s = await stat(path);
     if (s.isDirectory()) {

@@ -57,7 +57,7 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
   const stepText: string[] = [];
   try {
     for (let step = 0; step < maxSteps; step++) {
-      logEntry("DO MODELU", cfg.id, JSON.stringify({ step, messages: msgs }, null, 2));
+      logEntry("TO-MODEL", cfg.id, JSON.stringify({ step, messages: msgs }, null, 2));
       let result: any;
       try {
         result = streamText({
@@ -101,12 +101,12 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
         const parts: any[] = [];
         if (stepText.length) parts.push({ text: stepText.join("") });
         for (const c of pendingCalls) parts.push({ toolCall: { toolName: c.toolName, input: c.input } });
-        if (parts.length) logEntry("ODPOWIEDZ", cfg.id, JSON.stringify(parts, null, 2));
-        if (parts.length > 1) logEntry("ODPOWIEDZ-CZESCI", cfg.id, parts.map((p, i) => `--- część ${i + 1} (${p.text !== undefined ? "tekst" : `tool:${p.toolCall.toolName}`}) ---\n${p.text !== undefined ? p.text : JSON.stringify(p.toolCall, null, 2)}`).join("\n"));
+        if (parts.length) logEntry("RESPONSE", cfg.id, JSON.stringify(parts, null, 2));
+        if (parts.length > 1) logEntry("RESPONSE-PARTS", cfg.id, parts.map((p, i) => `--- part ${i + 1} (${p.text !== undefined ? "text" : `tool:${p.toolCall.toolName}`}) ---\n${p.text !== undefined ? p.text : JSON.stringify(p.toolCall, null, 2)}`).join("\n"));
         const txt = stepText.join("");
         if (txt) {
           const opts2 = [...txt.matchAll(/^\s{0,4}(\d{1,2})[.)\-]\s+(\S.*)$/gm)].map((m) => `${m[1]}. ${m[2]}`);
-          if (opts2.length >= 2) logEntry("ODPOWIEDZ-LISTA", cfg.id, JSON.stringify({ detectedOptions: opts2, hint: "user może odpowiedzieć numerem 1-N" }, null, 2));
+          if (opts2.length >= 2) logEntry("RESPONSE-LIST", cfg.id, JSON.stringify({ detectedOptions: opts2, hint: "user can answer with number 1-N" }, null, 2));
         }
       }
       let fr: any = null;

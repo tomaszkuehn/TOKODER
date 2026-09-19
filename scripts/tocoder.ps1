@@ -1,7 +1,7 @@
 param([string]$Prompt, [string]$Model, [switch]$All, [switch]$NoTui)
 $ErrorActionPreference="Stop"
 Push-Location $PSScriptRoot/..
-if (!(Test-Path ".env") -and (Test-Path ".env.example")) { Write-Host "Brak .env - skopiuj z .env.example i uzupelnij klucze" -ForegroundColor Yellow }
+if (!(Test-Path ".env") -and (Test-Path ".env.example")) { Write-Host "No .env found - copy it from .env.example and add your keys" -ForegroundColor Yellow }
 if (!(Test-Path "node_modules")) { npm install }
 npm run build | Out-Null
 $argsList=@()

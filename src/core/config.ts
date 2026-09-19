@@ -7,11 +7,36 @@ export type ModelConfig = {
   model: string;
   apiKeyEnv?: string;
   baseURL?: string;
+  contextWindow?: number;
 };
+
+export type CompactMode = "reduce" | "balance" | "value";
+
+export type CompactConfig = {
+  mode: CompactMode;
+  autoTrigger: boolean;
+  thresholdPercent: number;
+};
+
+export const COMPACT_DEFAULTS: CompactConfig = { mode: "balance", autoTrigger: true, thresholdPercent: 70 };
+export const DEFAULT_CONTEXT_WINDOW = 128000;
+
+// legacy Polish mode names → English
+const MODE_ALIASES: Record<string, CompactMode> = { redukcja: "reduce", balans: "balance", wartosc: "value", reduce: "reduce", balance: "balance", value: "value" };
+
+export function normalizeCompact(c?: Partial<CompactConfig>): CompactConfig {
+  const mode = MODE_ALIASES[String(c?.mode ?? "").toLowerCase()] ?? COMPACT_DEFAULTS.mode;
+  return {
+    mode,
+    autoTrigger: c?.autoTrigger ?? COMPACT_DEFAULTS.autoTrigger,
+    thresholdPercent: typeof c?.thresholdPercent === "number" ? c!.thresholdPercent! : COMPACT_DEFAULTS.thresholdPercent,
+  };
+}
 
 export type TokoderConfig = {
   models: ModelConfig[];
   defaultModel: string;
+  compact?: Partial<CompactConfig>;
 };
 
 const DEFAULTS: TokoderConfig = {

@@ -119,5 +119,5 @@ export function guard(target: string): string | null {
   const res = checkAccess(target, "write");
   if (res.ok) return null;
   if (res.reason === "system") return `DENIED: "${target}" is inside Windows system folder — never accessible.`;
-  return `PENDING-APPROVAL: "${target}" outside project (write=NIE domyślnie). User decision required via approval prompt or :acl.`;
+  return `PENDING-APPROVAL: "${target}" outside project (write=NO by default). User decision required via approval prompt or :acl.`;
 }

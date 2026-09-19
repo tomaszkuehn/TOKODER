@@ -1,7 +1,8 @@
 import React, { useEffect, useState, useRef, useMemo } from "react";
 import { Box, Text, useInput, useApp, useStdout } from "ink";
 import { runAgent, testConnection, type ToolDecision, type AccessDecision } from "../core/agent.js";
-import { loadConfig, saveConfig } from "../core/config.js";
+import { loadConfig, saveConfig, normalizeCompact, DEFAULT_CONTEXT_WINDOW } from "../core/config.js";
+import { compactHistory, estimateHistoryTokens, COMPACT_MODES, type CompactMode } from "../core/compact.js";
 import { countLOC, detectEnvs, formatDuration, estimateTokens } from "../utils/stats.js";
 import { setEnvKey, maskKey } from "../utils/env.js";
 import { logEntry } from "../utils/logger.js";
@@ -46,6 +47,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       return { ...st, [id]: { sent: cur.sent + s, recv: cur.recv + r } };
     });
   const active = cfg.models.find((m) => m.id === modelId)!;
+  const compactCfg = normalizeCompact(cfg.compact);
   const usedModels = Object.keys(tokenStats);
   const curTok = tokenStats[modelId] ?? { sent: 0, recv: 0 };
   const totTok = usedModels.reduce((a, id) => ({ sent: a.sent + tokenStats[id].sent, recv: a.recv + tokenStats[id].recv }), { sent: 0, recv: 0 });
@@ -117,7 +119,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
   const innerW = Math.max(20, cols - 6);
   const viewportH = Math.max(1, outputH - 3); // borders(2) + title(1)
 
-  const roleLabel = (r: string) => (r === "user" ? "› TY:" : r === "system" ? "◆ SYS:" : r === "error" ? "✗ ERR:" : "● AI:");
+  const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "◆ SYS:" : r === "error" ? "✗ ERR:" : "● AI:");
 
   // flat line model: label line + wrapped text lines per message
   const flatLines = useMemo(() => {
@@ -160,7 +162,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
     setModelId(next.id);
   };
 
-  const COMMANDS = ["exit", "quit", "q", "compact", "clear", "models", "key", "help", "allow", "deny"] as const;
+  const COMMANDS = ["exit", "quit", "q", "compact", "compact-mode", "compact-auto", "clear", "models", "key", "help", "allow", "deny"] as const;
   const MODEL_SUBS = ["add", "rm", "default", "key", "test", "set"] as const;
 
   const getSuggestion = (raw: string): string | null => {
@@ -208,6 +210,35 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
     setMessages((m) => [...m, { role: "error", text }]);
   };
 
+  const runCompact = async (instruction?: string) => {
+    const hist = historyRef.current;
+    if (hist.length <= 2) { pushSystem("Nothing to compact."); return; }
+    const cc = normalizeCompact(cfgRef.current.compact);
+    const mc = cfgRef.current.models.find((m) => m.id === modelId);
+    if (!mc) { pushError(`Model "${modelId}" not found`); return; }
+    pushSystem(`⏳ Compacting (${cc.mode}${instruction ? `, instruction: "${instruction}"` : ""})…`);
+    setBusy(true);
+    try {
+      const res = await compactHistory({
+        history: hist,
+        mode: cc.mode,
+        modelConfig: mc,
+        instruction,
+        onUsage: (u) => bumpTokens(modelId, u.inputTokens, u.outputTokens),
+      });
+      historyRef.current = [
+        { role: "user" as const, content: `[CONTEXT SUMMARY after compact — ${res.removed} older messages removed. Honor this summary when continuing.]\n${res.summary}` },
+        { role: "assistant" as const, content: "Understood. Continuing with the summarized context." },
+        ...res.kept,
+      ];
+      pushSystem(`✓ Compact (${res.mode}): -${res.removed} messages, context ≈${estimateHistoryTokens(historyRef.current)} tok${res.instruction ? ", instruction applied" : ""}`);
+    } catch (e: any) {
+      pushError(`Compact failed: ${e.message ?? String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const formatModels = (c = cfg) =>
     c.models
       .map((m) => {
@@ -236,13 +267,44 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       if (!p) { pushSystem("Usage: :deny <path>"); return true; }
       const { denyPath } = await import("../utils/permissions.js"); const ok = denyPath(p); pushSystem(ok ? `Revoked: ${p}` : `Not in allowlist: ${p}`); return true;
     }
-    if (["compact", "clear", "compress"].includes(c)) {
-      if (messages.length <= 2) pushSystem("Nothing to compact.");
-      else {
-        const keep = 2;
-        const removed = messages.length - keep;
-        setMessages((m) => [{ role: "system", text: `[COMPACT] Removed ${removed} messages.` }, ...m.slice(-keep)]);
+    if (c === "compact-mode" || c === "compactmode") {
+      const cur = reloadCfg();
+      const cc = normalizeCompact(cur.compact);
+      const m = args[0]?.toLowerCase();
+      if (!m) {
+        pushSystem(`Compact mode: ${cc.mode} | auto: ${cc.autoTrigger ? `${cc.thresholdPercent}% of window` : "off"}\n  reduce  — hard-trim history, 0 tokens, instant\n  balance — LLM summary + last 4 turns verbatim (default)\n  value   — structured extraction: GOAL/DECISIONS/FACTS/FILES/THREADS/STEPS + 8 turns\nChange: :compact-mode <reduce|balance|value>`);
+        return true;
       }
+      const mapped = ({ redukcja: "reduce", balans: "balance", wartosc: "value" } as Record<string, string>)[m] ?? m;
+      if (!COMPACT_MODES.includes(mapped as CompactMode)) { pushSystem(`Unknown mode "${m}". Available: ${COMPACT_MODES.join(", ")}`); return true; }
+      cur.compact = { ...cc, mode: mapped as CompactMode };
+      saveConfig(cur); reloadCfg();
+      pushSystem(`✓ Compact mode: ${mapped}`);
+      return true;
+    }
+    if (c === "compact-auto" || c === "compactauto") {
+      const cur = reloadCfg();
+      const cc = normalizeCompact(cur.compact);
+      const a = args[0]?.toLowerCase();
+      if (!a) {
+        const ctx = active.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+        pushSystem(`Auto-compact: ${cc.autoTrigger ? `ON @ ${cc.thresholdPercent}% of window (${Math.round((ctx * cc.thresholdPercent) / 100)} tok of ${ctx})` : "OFF"}\nChange: :compact-auto <on|off|percent 10-100>`);
+        return true;
+      }
+      if (["on", "tak", "yes"].includes(a)) cur.compact = { ...cc, autoTrigger: true };
+      else if (["off", "nie", "no"].includes(a)) cur.compact = { ...cc, autoTrigger: false };
+      else if (/^\d+$/.test(a)) {
+        const p = parseInt(a, 10);
+        if (p < 10 || p > 100) { pushSystem("Percent: 10-100."); return true; }
+        cur.compact = { ...cc, autoTrigger: true, thresholdPercent: p };
+      } else { pushSystem("Usage: :compact-auto <on|off|percent>"); return true; }
+      saveConfig(cur); reloadCfg();
+      const nc = normalizeCompact(reloadCfg().compact);
+      pushSystem(`✓ Auto-compact: ${nc.autoTrigger ? `ON @ ${nc.thresholdPercent}%` : "OFF"}`);
+      return true;
+    }
+    if (["compact", "clear", "compress"].includes(c)) {
+      await runCompact(args.join(" ").trim() || undefined);
       return true;
     }
     if (["models", "model", "providers"].includes(c)) {
@@ -264,7 +326,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       }
       if (sub === "add") {
         const [id, provider, model, baseURL] = args.slice(1);
-        if (!id && !provider) { setWizard({ step: "kind" }); pushSystem("DODAWANIE MODELU — kreator. Wybierz rodzaj:"); return true; }
+        if (!id && !provider) { setWizard({ step: "kind" }); pushSystem("ADD MODEL — wizard. Pick kind:"); return true; }
         if (!id || !provider || !model) { pushSystem("Usage: :models add <id> <provider> <model> [baseURL]  |  :models add — kreator interaktywny"); return true; }
         if (!["anthropic", "openai", "openrouter", "ollama"].includes(provider)) { pushSystem(`Invalid provider "${provider}"`); return true; }
         if (cur.models.find((m) => m.id === id)) { pushSystem(`Model "${id}" already exists`); return true; }
@@ -274,10 +336,10 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       }
       if (["rm", "remove", "del"].includes(sub)) {
         const id = args[1];
-        if (!id) { setWizard({ step: "rm", rmId: undefined, models: cur.models.map((m) => m.id) }); pushSystem(`USUWANIE MODELU — które ID?\n${cur.models.map((m, i) => `${String(i + 1).padStart(2)}. ${m.id} (${m.provider}/${m.model})`).join("\n")}\n\nWpisz numer lub nazwę ID.`); return true; }
+        if (!id) { setWizard({ step: "rm", rmId: undefined, models: cur.models.map((m) => m.id) }); pushSystem(`REMOVE MODEL — which id?\n${cur.models.map((m, i) => `${String(i + 1).padStart(2)}. ${m.id} (${m.provider}/${m.model})`).join("\n")}\n\nType a number or id.`); return true; }
         if (!cur.models.find((m) => m.id === id)) { pushSystem(`Not found: ${id}`); return true; }
         setWizard({ step: "rm", rmId: id });
-        pushSystem(`Usunąć model "${id}"? [T]ak / [N]ie`); return true;
+        pushSystem(`Delete model "${id}"? [Y]es / [N]o`); return true;
       }
       if (sub === "default") {
         const id = args[1];
@@ -296,7 +358,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       if (sub === "set") {
         const [id, field, ...rest] = args.slice(1);
         const value = rest.join(" ");
-        if (!id || !field || !value) { pushSystem("Usage: :models set <id> <provider|model|baseURL|apiKeyEnv> <value>"); return true; }
+        if (!id || !field || !value) { pushSystem("Usage: :models set <id> <provider|model|baseURL|apiKeyEnv|contextWindow> <value>"); return true; }
         const m = cur.models.find((x) => x.id === id);
         if (!m) { pushSystem(`Not found: ${id}`); return true; }
         if (field === "provider" && !["anthropic", "openai", "openrouter", "ollama"].includes(value)) { pushSystem(`Invalid provider`); return true; }
@@ -308,20 +370,20 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
     if (["acl", "access"].includes(c)) {
       const { loadRules, listAllowed, rulesPath } = await import("../utils/permissions.js");
       const r = loadRules();
-      pushSystem(`ZASADY DOSTĘPU (poza projektem) — ${rulesPath()}\nGlobalnie: read=${r.read ? "TAK" : "NIE"}, write=${r.write ? "TAK" : "NIE"}, execute=${r.execute ? "TAK" : "NIE"}\n\nReguły per-ścieżka:\n${listAllowed().join("\n") || "— brak —"}\n\nZmiana: :acl set <read|write|execute> <tak|nie>\nDodaj: :allow <path> [read|write|execute]  •  Usuń: :deny <path>`);
+      pushSystem(`ACCESS RULES (outside project) — ${rulesPath()}\nGlobal: read=${r.read ? "YES" : "NO"}, write=${r.write ? "YES" : "NO"}, execute=${r.execute ? "YES" : "NO"}\n\nPer-path rules:\n${listAllowed().join("\n") || "— none —"}\n\nChange: :acl set <read|write|execute> <yes|no>\nAdd: :allow <path> [read|write|execute]  •  Remove: :deny <path>`);
       return true;
     }
     if (c === "aclset") {
       const [field, val] = args;
-      if (!field || !val || !["read", "write", "execute"].includes(field) || !["tak", "nie", "yes", "no"].includes(val.toLowerCase())) { pushSystem("Usage: :acl set <read|write|execute> <tak|nie>"); return true; }
+      if (!field || !val || !["read", "write", "execute"].includes(field) || !["tak", "nie", "yes", "no"].includes(val.toLowerCase())) { pushSystem("Usage: :acl set <read|write|execute> <yes|no>"); return true; }
       const mod = await import("../utils/permissions.js");
       const r = mod.loadRules();
       (r as any)[field] = ["tak", "yes"].includes(val.toLowerCase());
       mod.saveRules();
-      pushSystem(`✓ ${field} = ${(r as any)[field] ? "TAK" : "NIE"} (zapisane między sesjami)`);
+      pushSystem(`✓ ${field} = ${(r as any)[field] ? "YES" : "NO"} (persisted across sessions)`);
       return true;
     }
-    if (["help", "h", "?"].includes(c)) { pushSystem(`Commands:\n:exit / :q — exit\n:compact — compact\n:key — set Ollama Cloud API key\n:models — list\n:models add — interactive wizard\n:models rm — interactive remove\n:models test <id>\n:allow <path> / :deny <path> — sandbox\nPgUp/PgDn scroll`); return true; }
+    if (["help", "h", "?"].includes(c)) { pushSystem(`Commands:\n:exit / :q — exit\n:compact [instruction] — compact history (mode: :compact-mode)\n  examples: :compact keep the implementation plan\n             :compact focus on decisions and file paths\n             :compact keep open threads and next steps\n:compact-mode <reduce|balance|value> — compact strategy\n:compact-auto <on|off|percent> — auto-trigger at % of context window\n:key — set Ollama Cloud API key\n:models — list | :models add/rm — wizards | :models test <id>\n  :models set <id> contextWindow <tok> — window for auto-compact\n:allow <path> / :deny <path> — sandbox\nPgUp/PgDn scroll`); return true; }
     pushSystem(`Unknown command ":${c}". Try :help`); return true;
   };
 
@@ -334,48 +396,48 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
   };
 
   const wizardPrompt = (w: NonNullable<typeof wizard>): string => {
-    if (w.step === "kind") return "DODAWANIE MODELU — 1: Ollama lokalny (localhost:11434), 2: Ollama Cloud (ollama.com)";
+    if (w.step === "kind") return "ADD MODEL — 1: local Ollama (localhost:11434), 2: Ollama Cloud (ollama.com)";
     if (w.step === "key") {
       const has = process.env.OLLAMA_API_KEY;
-      return `KLUCZ API dla Ollama Cloud${has ? ` (jest ${maskKey(has)} — wpisz nowy aby nadpisać, Enter = zostaw)` : " (wklej klucz z ollama.com/settings/keys)"}`;
+      return `API KEY for Ollama Cloud${has ? ` (have ${maskKey(has)} — type a new one to replace, Enter = keep)` : " (paste key from ollama.com/settings/keys)"}`;
     }
-    if (w.step === "model") return `Wybierz model — numer z listy lub wpisz nazwę ręcznie (${w.models?.length ?? 0} znalezionych, "n" = własna nazwa)`;
-    if (w.step === "rm") return w.rmId === undefined ? "Wpisz numer lub ID modelu do usunięcia" : `Potwierdź usunięcie "${w.rmId}" — t/n`;
-    return `ID dla ${w.model} (Enter = "${w.suggestedId}")`;
+    if (w.step === "model") return `Pick a model — number from the list or type the name (${w.models?.length ?? 0} found, "n" = custom name)`;
+    if (w.step === "rm") return w.rmId === undefined ? "Type a number or model id to remove" : `Confirm removal of "${w.rmId}" — y/n`;
+    return `ID for ${w.model} (Enter = "${w.suggestedId}")`;
   };
 
   const handleWizard = async (value: string) => {
     const w = wizard!;
     const v = value.trim();
-    if (v === ":q" || v === ":exit") { setWizard(null); pushSystem("Wizard przerwany."); return; }
+    if (v === ":q" || v === ":exit") { setWizard(null); pushSystem("Wizard aborted."); return; }
     if (w.step === "kind") {
-      if (v !== "1" && v !== "2") { pushSystem("Wpisz 1 (lokalny) lub 2 (cloud)."); return; }
+      if (v !== "1" && v !== "2") { pushSystem("Type 1 (local) or 2 (cloud)."); return; }
       const kind = v === "1" ? "local" as const : "cloud" as const;
-      if (kind === "cloud" && !process.env.OLLAMA_API_KEY) { setWizard(null); pushError("Ollama Cloud wymaga klucza API. Najpierw uruchom :key (lub :models key <id> <KEY>), potem :models add."); return; }
+      if (kind === "cloud" && !process.env.OLLAMA_API_KEY) { setWizard(null); pushError("Ollama Cloud requires an API key. Run :key first (or :models key <id> <KEY>), then :models add."); return; }
       setWizard({ ...w, step: "model", kind, models: [] });
       try {
         const models = (await listOllamaModels(kind)).map((m) => m.name);
         setWizard({ step: "model", kind, models });
-        pushSystem(`Ollama ${kind === "local" ? "lokalny" : "cloud"} — dostępne modele:\n${models.map((m, i) => `${String(i + 1).padStart(2)}. ${m}`).join("\n")}\n\nWpisz numer, nazwę modelu lub "n" (własna).`);
+        pushSystem(`Ollama ${kind === "local" ? "local" : "cloud"} — available models:\n${models.map((m, i) => `${String(i + 1).padStart(2)}. ${m}`).join("\n")}\n\nType a number, model name, or "n" (custom).`);
       } catch (e: any) {
         setWizard(null);
-        pushError(`Nie udało się pobrać listy (${kind === "local" ? "czy `ollama serve` działa?" : e.message})`);
+        pushError(`Failed to fetch list (${kind === "local" ? "is `ollama serve` running?" : e.message})`);
       }
       return;
     }
     if (w.step === "key") {
-      if (!v || v.startsWith(":")) { pushSystem("Podaj klucz (anuluj: :q)."); return; }
+      if (!v || v.startsWith(":")) { pushSystem("Provide a key (cancel: :q)."); return; }
       setEnvKey("OLLAMA_API_KEY", v);
       setWizard(null);
-      pushSystem(`✓ Klucz zapisany do .env → OLLAMA_API_KEY (${maskKey(v)}). Teraz :models add → 2 (Ollama Cloud).`);
+      pushSystem(`✓ Key saved to .env → OLLAMA_API_KEY (${maskKey(v)}). Now :models add → 2 (Ollama Cloud).`);
       return;
     }
     if (w.step === "model") {
       let model: string | undefined;
       if (/^\d+$/.test(v)) model = w.models?.[parseInt(v, 10) - 1];
-      else if (v.toLowerCase() === "n") { pushSystem('Wpisz pełną nazwę modelu (np. "qwen3-coder:480b").'); return; }
+      else if (v.toLowerCase() === "n") { pushSystem('Type the full model name (e.g. "qwen3-coder:480b").'); return; }
       else model = v;
-      if (!model) { pushSystem(`Nie ma takiego numeru (1-${w.models?.length ?? 0}).`); return; }
+      if (!model) { pushSystem(`No such number (1-${w.models?.length ?? 0}).`); return; }
       setWizard({ ...w, step: "id", model, suggestedId: suggestFreeId(model, cfg.models) });
       return;
     }
@@ -384,29 +446,29 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
         let id: string | undefined;
         if (/^\d+$/.test(v)) id = w.models?.[parseInt(v, 10) - 1];
         else id = v;
-        if (!id || !w.models?.includes(id)) { pushSystem(`Nie ma takiego modelu (1-${w.models?.length ?? 0} lub nazwa ID).`); return; }
+        if (!id || !w.models?.includes(id)) { pushSystem(`No such model (1-${w.models?.length ?? 0} or id name).`); return; }
         setWizard({ ...w, rmId: id });
-        pushSystem(`Usunąć model "${id}"? [T]ak / [N]ie`);
+        pushSystem(`Delete model "${id}"? [Y]es / [N]o`);
         return;
       }
-      if (v.toLowerCase() === "t") { /* fallthrough do usuwania */ }
-      else if (v.toLowerCase() === "n") { setWizard(null); pushSystem("Anulowano."); return; }
-      else { pushSystem('Wpisz "t" (usuń) lub "n" (anuluj).'); return; }
+      if (v.toLowerCase() === "t" || v.toLowerCase() === "y") { /* fallthrough do usuwania */ }
+      else if (v.toLowerCase() === "n") { setWizard(null); pushSystem("Cancelled."); return; }
+      else { pushSystem('Type "y" (delete) or "n" (cancel).'); return; }
       const cur = reloadCfg();
       const idx = cur.models.findIndex((m) => m.id === w.rmId);
-      if (idx === -1) { setWizard(null); pushSystem(`Nie znaleziono: ${w.rmId}`); return; }
+      if (idx === -1) { setWizard(null); pushSystem(`Not found: ${w.rmId}`); return; }
       const removed = cur.models.splice(idx, 1)[0];
       if (cur.defaultModel === removed.id) cur.defaultModel = cur.models[0]?.id ?? "";
       saveConfig(cur); reloadCfg();
       if (modelId === removed.id) setModelId(cur.defaultModel);
       setWizard(null);
-      pushSystem(`✓ Usunięto ${removed.id} (${removed.provider}/${removed.model})${cur.defaultModel ? `\nDefault: ${cur.defaultModel}` : "\n⚠ Brak modeli w konfiguracji!"}`);
+      pushSystem(`✓ Removed ${removed.id} (${removed.provider}/${removed.model})${cur.defaultModel ? `\nDefault: ${cur.defaultModel}` : "\n⚠ No models left in config!"}`);
       return;
     }
     if (w.step === "id") {
       const id = v || w.suggestedId || ollamaIdSuggestion(w.model ?? "");
       const cur = reloadCfg();
-      if (cur.models.find((m) => m.id === id)) { pushSystem(`ID "${id}" już istnieje — podaj inne.`); return; }
+      if (cur.models.find((m) => m.id === id)) { pushSystem(`ID "${id}" already exists — choose another.`); return; }
       const isCloud = w.kind === "cloud";
       cur.models.push({
         id,
@@ -417,7 +479,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       saveConfig(cur); reloadCfg();
       setWizard(null);
       pushSystem(
-        `✓ Dodano ${id} → ${w.model}${isCloud ? " (Ollama Cloud, https://ollama.com/v1)" : " (lokalny)"}\n${isCloud && !process.env.OLLAMA_API_KEY ? `⚠ Ustaw klucz: :models key ${id} <OLLAMA_API_KEY> (z ollama.com/settings/keys)\n` : ""}Teraz: :models test ${id}${isCloud ? "" : "\nJeśli model nie jest pobrany: ollama pull " + w.model}`
+        `✓ Added ${id} → ${w.model}${isCloud ? " (Ollama Cloud, https://ollama.com/v1)" : " (local)"}\n${isCloud && !process.env.OLLAMA_API_KEY ? `⚠ Set the key: :models key ${id} <OLLAMA_API_KEY> (from ollama.com/settings/keys)\n` : ""}Now: :models test ${id}${isCloud ? "" : "\nIf the model is not pulled yet: ollama pull " + w.model}`
       );
       return;
     }
@@ -440,7 +502,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
     }
     if (key.pageUp) { setScroll((s) => Math.min(maxScroll, s + 5)); return; }
     if (key.pageDown) { setScroll((s) => Math.max(0, s - 5)); return; }
-    if (key.escape) { setWizard(null); setHistIdx(-1); pushSystem("Anulowano (Esc — wyjście tylko przez :exit)."); return; }
+    if (key.escape) { setWizard(null); setHistIdx(-1); pushSystem("Cancelled (Esc — exit only via :exit)."); return; }
     if (key.ctrl && char === "c") exit();
     if (key.tab) {
       const sug = getSuggestion(input);
@@ -464,7 +526,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
         const lastAi = [...messages].reverse().find((m) => m.role === "assistant");
         const opt = lastAi?.text.match(new RegExp(`^\\s*${n}[.)\\-]\\s*(.+)$`, "m"));
         effectivePrompt = opt ? `My choice is option ${n}: "${opt[1].trim()}". Continue.` : `My choice is option ${n} from your last list. Continue.`;
-        logEntry("WYBOR UZYTKOWNIKA", modelId, JSON.stringify({ raw: prompt, expanded: effectivePrompt, quotedFrom: opt?.[1]?.trim() ?? null }, null, 2));
+        logEntry("USER-CHOICE", modelId, JSON.stringify({ raw: prompt, expanded: effectivePrompt, quotedFrom: opt?.[1]?.trim() ?? null }, null, 2));
       }
       setMessages((m) => [...m, { role: "user", text: prompt }]);
       setBusy(true); setLastErr(null);
@@ -497,6 +559,16 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
         if (!usageSent) bumpTokens(modelId, estimateTokens(prompt), 0);
         if (!usageRecv && acc.trim()) bumpTokens(modelId, 0, estimateTokens(acc));
         historyRef.current = [...history, { role: "user" as const, content: effectivePrompt }, { role: "assistant" as const, content: acc }].slice(-20);
+        const cc = normalizeCompact(cfgRef.current.compact);
+        if (cc.autoTrigger) {
+          const ctx = active.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+          const used = estimateHistoryTokens(historyRef.current);
+          const limit = Math.round((ctx * cc.thresholdPercent) / 100);
+          if (used > limit) {
+            pushSystem(`⚙ Auto-compact: ${used} tok > ${limit} (${cc.thresholdPercent}% of ${ctx})`);
+            await runCompact();
+          }
+        }
       } catch (e: any) {
         pushError(e.message ?? String(e));
         setMessages((m) => {
@@ -542,22 +614,23 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
         <Text bold color={lastErr ? "red" : "yellow"}>● STATUS {lastErr ? "— ERROR" : ""}</Text>
         <Box flexWrap="wrap" flexDirection="row" columnGap={2}>
           <Text><Text color="cyan">Model: </Text><Text bold>{active.id}</Text><Text dimColor> ({active.provider}/{active.model})</Text></Text>
-          <Text><Text color="green">↑ {curTok.sent.toLocaleString("pl-PL")}</Text><Text dimColor> sent</Text><Text> </Text><Text color="magenta">↓ {curTok.recv.toLocaleString("pl-PL")}</Text><Text dimColor> recv</Text></Text>
-          {usedModels.length > 1 && <Text dimColor>(∑ {usedModels.length} models: ↑{totTok.sent.toLocaleString("pl-PL")} ↓{totTok.recv.toLocaleString("pl-PL")})</Text>}
+          <Text><Text color="green">↑ {curTok.sent.toLocaleString("en-US")}</Text><Text dimColor> sent</Text><Text> </Text><Text color="magenta">↓ {curTok.recv.toLocaleString("en-US")}</Text><Text dimColor> recv</Text></Text>
+          {usedModels.length > 1 && <Text dimColor>(∑ {usedModels.length} models: ↑{totTok.sent.toLocaleString("en-US")} ↓{totTok.recv.toLocaleString("en-US")})</Text>}
         </Box>
         <Box flexWrap="wrap" flexDirection="row" columnGap={2}>
-          <Text><Text color="cyan">LOC: </Text><Text>{loc === null ? "…" : loc.toLocaleString("pl-PL")}</Text></Text>
-          <Text><Text color="cyan">Czas: </Text><Text>{formatDuration(elapsed)}</Text></Text>
+          <Text><Text color="cyan">LOC: </Text><Text>{loc === null ? "…" : loc.toLocaleString("en-US")}</Text></Text>
+          <Text><Text color="cyan">Time: </Text><Text>{formatDuration(elapsed)}</Text></Text>
           <Text><Text color="cyan">Env: </Text>{envs.map((e, i) => <Text key={e.label} color={e.ok ? "green" : "gray"}>{i ? " " : ""}{e.ok ? "✓" : "✗"}{e.label}</Text>)}</Text>
+          <Text><Text color="cyan">Compact: </Text><Text bold>{compactCfg.mode}</Text>{compactCfg.autoTrigger ? <Text dimColor> (auto {compactCfg.thresholdPercent}%)</Text> : <Text dimColor> (auto off)</Text>}</Text>
         </Box>
         {lastErr && <Text color="red" wrap="wrap">✗ {lastErr}</Text>}
       </Box>
 
       <Box flexGrow={1} flexShrink={1} flexDirection="column" overflow="hidden" borderStyle="round" borderColor="green" marginTop={1} paddingX={1} height={outputH}>
-        <Box flexShrink={0}><Text bold color="green">● ODPOWIEDŹ MODELU {busy ? "(pisze…)" : ""}</Text><Text dimColor>{moreAbove ? " ↑more" : ""}{moreBelow ? " ↓end" : ""} {flatLines.length > viewportH ? `[${startIdx + 1}-${startIdx + visibleLines.length}/${flatLines.length} linii]` : ""}</Text></Box>
+        <Box flexShrink={0}><Text bold color="green">● MODEL RESPONSE {busy ? "(writing…)" : ""}</Text><Text dimColor>{moreAbove ? " ↑more" : ""}{moreBelow ? " ↓end" : ""} {flatLines.length > viewportH ? `[${startIdx + 1}-${startIdx + visibleLines.length}/${flatLines.length} lines]` : ""}</Text></Box>
         <Box flexDirection="row">
           <Box flexDirection="column" width={innerW - 1} flexShrink={0}>
-            {visibleLines.length === 0 && messages.length === 0 && !busy && <Text dimColor> Brak wiadomości — :help</Text>}
+            {visibleLines.length === 0 && messages.length === 0 && !busy && <Text dimColor> No messages — :help</Text>}
             {visibleLines.map((ln, i) => (
               <Text key={i} color={ln.role === "user" ? "blue" : ln.role === "system" ? "yellow" : ln.role === "error" ? "red" : ln.isLabel ? "white" : undefined} bold={ln.isLabel} wrap="truncate">{ln.text}</Text>
             ))}
@@ -575,28 +648,28 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       <Box flexShrink={0} borderStyle="round" borderColor={isCmd ? "yellow" : lastErr ? "red" : "magenta"} marginTop={1} paddingX={1} flexDirection="column">
         <Box flexDirection="row" flexWrap="wrap" width={innerW}>
           <Text color={wizard ? "cyan" : isCmd ? "yellow" : "magenta"} bold>{wizard ? "⚙" : isCmd ? ":" : "›"} </Text>
-          <Text color={wizard ? "cyan" : busy ? "gray" : isCmd ? "yellow" : "yellow"} wrap="wrap">{wizard ? wizardPrompt(wizard) : busy ? (pendingTool ? "" : "(zajęty…)") : isCmd ? input.slice(1) : input}{suggestion && !busy && !wizard ? <Text dimColor>{suggestion}</Text> : null}</Text>
+          <Text color={wizard ? "cyan" : busy ? "gray" : isCmd ? "yellow" : "yellow"} wrap="wrap">{wizard ? wizardPrompt(wizard) : busy ? (pendingTool ? "" : "(busy…)") : isCmd ? input.slice(1) : input}{suggestion && !busy && !wizard ? <Text dimColor>{suggestion}</Text> : null}</Text>
           {!wizard && <Text backgroundColor={busy ? undefined : isCmd ? "yellow" : "white"} color={isCmd ? "black" : "white"}> </Text>}
         </Box>
-        {wizard && <Text dimColor wrap="wrap">→ {input || "(wpisz odpowiedź)"} ▌   (:q przerywa)</Text>}
+        {wizard && <Text dimColor wrap="wrap">→ {input || "(type answer)"} ▌   (:q aborts)</Text>}
         {pendingAccess && (
           <Box flexDirection="column">
-            <Text color="red" bold>🔒 DOSTĘP POZA PROJEKT ({pendingAccess.mode})</Text>
+            <Text color="red" bold>🔒 ACCESS OUTSIDE PROJECT ({pendingAccess.mode})</Text>
             <Text wrap="truncate">{pendingAccess.target}</Text>
-            <Text bold color="yellow">[P]lik  [F]folder nadrzędny  [N]ie</Text>
+            <Text bold color="yellow">[P]File  [F]Parent folder  [N]o</Text>
           </Box>
         )}
         {pendingTool && !pendingAccess && (
           <Box flexDirection="column">
             <Text color="cyan" bold>⚡ Tool: {pendingTool.name}</Text>
             <Text dimColor wrap="truncate">{JSON.stringify(pendingTool.args).slice(0, innerW - 2)}</Text>
-            <Text bold color="yellow">[T]ak  [N]ie  [A]zawsze dla {pendingTool.name}</Text>
+            <Text bold color="yellow">[Y]es  [N]o  [A]lways for {pendingTool.name}</Text>
           </Box>
         )}
         {suggestion && !busy && <Box><Text dimColor>↹Tab → :{input.slice(1) + suggestion}  ↵Enter executes</Text></Box>}
         {input.length > innerW && <Box><Text dimColor>↔ {input.length}/{innerW} chars — wraps</Text></Box>}
       </Box>
-      <Box flexShrink={0}><Text dimColor wrap="wrap">↑↓ history {histIdx >= 0 ? `(${histIdx + 1}/${cmdHistory.length})` : ""} (edytowalna) | PgUp/PgDn scroll | :models test {modelId} | {visibleLines.length}/{flatLines.length} linii{suggestion ? ` | :${input.slice(1) + suggestion}` : ""}</Text></Box>
+      <Box flexShrink={0}><Text dimColor wrap="wrap">↑↓ history {histIdx >= 0 ? `(${histIdx + 1}/${cmdHistory.length})` : ""} (editable) | PgUp/PgDn scroll | :models test {modelId} | {visibleLines.length}/{flatLines.length} lines{suggestion ? ` | :${input.slice(1) + suggestion}` : ""}</Text></Box>
     </Box>
   );
 }

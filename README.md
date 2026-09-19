@@ -5,8 +5,8 @@ AI coding agent for the terminal — clone of [opencode](https://github.com/anom
 ## Features
 
 - **Agent loop** with tool calling (`read`, `write`, `edit`, `bash`, `glob`, `grep`) — manual multi-step loop (`stepCountIs`), 300s timeout per step, typed errors, always replies even if text empty
-- **Tool approval** — every tool call asks `[T]ak / [N]ie / [A]zawsze` (A whitelists tool for the session); denied calls report back to the model
-- **ACL sandbox** — full access inside `cwd`; outside: Windows system folders always denied, per-mode rules (read/write/execute) persisted across sessions in `~/.config/tokoder/access-rules.json`; on first access outside rules the app asks `[P]lik / [F]folder / [N]ie` and auto-retries the tool. Manage with `:acl`, `:acl set <mode> <tak|nie>`, `:allow <path> [read|write|execute]`, `:deny <path>`
+- **Tool approval** — every tool call asks `[Y]es / [N]o / [A]lways` (A whitelists tool for the session); denied calls report back to the model
+- **ACL sandbox** — full access inside `cwd`; outside: Windows system folders always denied, per-mode rules (read/write/execute) persisted across sessions in `~/.config/tokoder/access-rules.json`; on first access outside rules the app asks `[P]File / [F]Parent folder / [N]o` and auto-retries the tool. Manage with `:acl`, `:acl set <mode> <yes|no>`, `:allow <path> [read|write|execute]`, `:deny <path>`
 - **Multi-model** — models via `tokoder.config.json` (Anthropic / OpenAI / OpenRouter / Ollama local + Ollama Cloud)
 - **Interactive `:models add` wizard** — local/cloud Ollama with live model listing (`/api/tags`), auto-suggested free id (overridable); cloud requires key set first via `:key`
 - **Per-model token counters** — `id (1.1k↑/3.4k↓)` next to every model in header (0↑/0↓ when unused), `↑ sent ↓ recv` for active model + `∑` total, counted until app exit; real `usage` from provider per agent step, `len/4` fallback
@@ -83,7 +83,7 @@ TOCODER_DEBUG=1 tocoder          # per-step finishReason diagnostics
 # :e + Tab/Enter   autocomplete vim commands (ghost hint)
 # PgUp/PgDn        scroll output (auto-scroll pauses; PgDn returns to bottom)
 # ↑/↓              previous prompts & commands — editable (Backspace works)
-# T / N / A        approve / deny / always-allow pending tool call
+# Y / N / A        approve / deny / always-allow pending tool call
 # P / F / N        grant access outside project: file / parent dir / deny
 # Enter            send (prefix :comp → :compact auto-completes)
 # Esc              cancel wizard / prompt (exit only via :exit or Ctrl+C)
@@ -99,33 +99,49 @@ scripts/tocoder.bat "prompt"
 | Command | Action |
 |---------|--------|
 | `:exit`, `:q`, `:quit` | exit (transcript dumped) |
-| `:compact` | keep last 2 messages (token counters preserved) |
+| `:compact [instruction]` | compact history — mode-dependent (see below); instruction focuses the summary |
+| `:compact-mode <reduce\|balance\|value>` | compact strategy (default `balance`), persisted in config |
+| `:compact-auto <on\|off\|10-100>` | auto-compact trigger at N% of model context window (default 70%) |
 | `:key` | interactive Ollama Cloud API key setup |
 | `:models` | list models |
 | `:models <id>` | switch model |
 | `:models add` | **interactive wizard** — local/cloud Ollama, live model list, auto id |
 | `:models add <id> <provider> <model> [baseURL]` | manual add |
-| `:models rm` | **interactive remove** — pick from list, `t/n` confirm |
+| `:models rm` | **interactive remove** — pick from list, `y/n` confirm |
 | `:models default <id>` | set default |
 | `:models key <id> <API_KEY>` | save to `.env` |
 | `:models test [id]` | diagnose connection (`/api/tags`) |
 | `:models set <id> <field> <value>` | edit field |
 | `:acl` | show access rules + path to rules file |
-| `:acl set <read\|write\|execute> <tak\|nie>` | toggle global outside-access default |
+| `:acl set <read\|write\|execute> <yes\|no>` | toggle global outside-access default |
 | `:allow <path> [read\|write\|execute]` | permit path outside `cwd` |
 | `:deny <path>` | revoke |
 | `:help` | help |
 
 Typing `:` shows ghost hint when prefix is unambiguous — `Enter` executes, `Tab` completes (e.g. `:comp` → `:compact`).
 
+## Compact
+
+History compaction replaces old turns with a model-generated summary + keeps recent turns verbatim. Active mode is shown in the STATUS panel (`Compact: …`).
+
+| Mode | Mechanism | Cost |
+|------|-----------|------|
+| `reduce` | hard-trim history, keep last turns verbatim, no LLM | 0 tokens |
+| `balance` (default) | LLM summary (goal/decisions/files/state/next) + last 4 turns verbatim | 1 call |
+| `value` | structured extraction: GOAL/DECISIONS/PROJECT FACTS/FILES CHANGED/OPEN THREADS/NEXT STEPS + last 8 turns verbatim | 1 call |
+
+- `:compact <instruction>` — steer the summary, e.g. `:compact keep the implementation plan`, `:compact focus on decisions and file paths`, `:compact keep open threads and next steps`.
+- **Auto-compact**: fires when estimated history tokens exceed `thresholdPercent` of the model context window. Set a model's window with `:models set <id> contextWindow <tokens>` (default 128000).
+- Config: `"compact": { "mode": "balance", "autoTrigger": true, "thresholdPercent": 70 }` in `tokoder.config.json`.
+
 ## Access Control (ACL)
 
 - **Inside `cwd`**: always full access (read/write/execute).
 - **Outside `cwd`**:
   - Windows system folders (`C:\Windows`, `Program Files`, `ProgramData`) — never accessible
-  - Global defaults: `read=TAK`, `write=NIE`, `execute=NIE`
+  - Global defaults: `read=YES`, `write=NO`, `execute=NO`
   - Per-path exceptions with mode (`r:`/`w:`/`x:`)
-- When a tool hits a path outside rules, the app asks: `[P]lik` (this file only), `[F]folder nadrzędny` (parent dir), `[N]ie` — then auto-retries the tool call.
+- When a tool hits a path outside rules, the app asks: `[P]File` (this file only), `[F]Parent folder` (parent dir), `[N]o` — then auto-retries the tool call.
 - All rules persist across sessions in `%USERPROFILE%\.config\tokoder\access-rules.json`.
 
 ## TUI Layout
@@ -135,21 +151,21 @@ Typing `:` shows ghost hint when prefix is unambiguous — `Enter` executes, `Ta
 │ ● claude-sonnet (1.1k↑/3.4k↓) ○ gpt-4o (0↑/0↓) │  ← per-model tokens (1k precision)
 ├─ STATUS ───────────────────────────────────┤
 │ Model: claude-sonnet (...)  ↑ 1,234 sent ↓ 567 recv │  ← wraps on narrow terminals
-│ LOC: 2,069  Czas: 00:05:23  Env: ✓WSL ✓Android ✓Node │
+│ LOC: 2,069  Time: 00:05:23  Env: ✓WSL ✓Android ✓Node │
 ├─ AI RESPONSE (auto-scroll + scrollbar) ────┤
 │ ● AI: ...                               █  │  ← PgUp/PgDn pauses
 ├─ INPUT ────────────────────────────────────┤
 │ › your command ▌                           │
 │ ⚡ Tool: bash {"command":"g++ ..."}         │  ← pending approval
-│ [T]ak  [N]ie  [A]zawsze dla bash           │
-│ 🔒 DOSTĘP POZA PROJEKT (write)             │  ← ACL prompt
+│ [Y]es  [N]o  [A]lways for bash             │
+│ 🔒 ACCESS OUTSIDE PROJECT (write)          │  ← ACL prompt
 │    D:\outside\file.txt                     │
-│ [P]lik  [F]folder nadrzędny  [N]ie         │
+│ [P]File  [F]Parent folder  [N]o            │
 └────────────────────────────────────────────┘
 ```
 
 - **Header**: `TOKODER` + cwd (bold yellow), per-model token counters
-- **Status**: flex-wrap segments — on narrow terminals `Model:`/tokens/`LOC`/`Czas`/`Env` move whole to next line instead of breaking
+- **Status**: flex-wrap segments — on narrow terminals `Model:`/tokens/`LOC`/`Time`/`Env`/`Compact` move whole to next line instead of breaking
 - **Output**: flat line-viewport (wrap-aware), auto-follows bottom during streaming; scrollbar column `█/│` on the right; PgDn returns to live bottom
 - **Input**: `flexWrap="wrap"`, `↑`/`↓` history `(n/N)` — editable without losing position, ghost `suggestion`
 - **LOC**: `src/utils/stats.ts` (ignores `node_modules`, `dist`, `.git`)
@@ -167,7 +183,7 @@ Typing `:` shows ghost hint when prefix is unambiguous — `Enter` executes, `Ta
 
 **Choice `1`-`9` ignored** — now expands quoting the option text from the model's last list, with 20-turn history.
 
-**Builds outside folder** — ACL: system folders always denied; outside rules → app asks `[P]lik/[F]folder/[N]ie` and auto-retries. Defaults `read=TAK, write=NIE, execute=NIE`; change via `:acl set <mode> <tak|nie>`, per-path `:allow <path> [mode]`. Rules live in `~/.config/tokoder/access-rules.json`.
+**Builds outside folder** — ACL: system folders always denied; outside rules → app asks `[P]File/[F]Parent/[N]o` and auto-retries. Defaults `read=YES, write=NO, execute=NO`; change via `:acl set <mode> <yes|no>`, per-path `:allow <path> [mode]`. Rules live in `~/.config/tokoder/access-rules.json`.
 
 **Local model no response**
 
