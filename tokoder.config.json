@@ -26,7 +26,7 @@
   "compact": {
     "mode": "balance",
     "autoTrigger": true,
-    "thresholdPercent": 70,
+    "thresholdPercent": 20,
     "maxTokens": 20000
   }
 }

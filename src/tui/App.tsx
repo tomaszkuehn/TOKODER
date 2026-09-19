@@ -33,6 +33,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
   }>(null);
   const approvalRef = useRef<((d: ToolDecision) => void) | null>(null);
   const alwaysRef = useRef<Set<string>>(new Set());
+  const abortRef = useRef<AbortController | null>(null);
   const [tokenStats, setTokenStats] = useState<Record<string, { sent: number; recv: number }>>({});
   const [loc, setLoc] = useState<number | null>(null);
   const [elapsed, setElapsed] = useState(0);
@@ -458,7 +459,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       pushSystem(r.created ? `✓ Created ${r.path} with default content (≈${tok} tok sent with every prompt)` : `${r.path} already exists — see :agents`);
       return true;
     }
-    if (["help", "h", "?"].includes(c)) { pushSystem(`Commands:\n:exit / :q — exit\n:compact [instruction] — compact history (mode: :compact-mode)\n  examples: :compact keep the implementation plan\n             :compact focus on decisions and file paths\n             :compact keep open threads and next steps\n:compact-mode <reduce|balance|value> — compact strategy\n:compact-auto <on|off|percent|tokens <n>> — auto-trigger: % of context window OR absolute token limit, whichever comes first\n:agents — project instructions file (AGENTS.md), sent with every prompt\n  :agents init | edit | add <text> | rm <line>\n:init — create AGENTS.md with defaults\n:key — set Ollama Cloud API key\n:models — list | :models add/rm — wizards | :models test <id>\n  :models set <id> contextWindow <tok> — window for auto-compact\n:allow <path> / :deny <path> — sandbox\nPgUp/PgDn scroll`); return true; }
+    if (["help", "h", "?"].includes(c)) { pushSystem(`Commands:\n:exit / :q — exit\n:compact [instruction] — compact history (mode: :compact-mode)\n  examples: :compact keep the implementation plan\n             :compact focus on decisions and file paths\n             :compact keep open threads and next steps\n:compact-mode <reduce|balance|value> — compact strategy\n:compact-auto <on|off|percent|tokens <n>> — auto-trigger: % of context window OR absolute token limit, whichever comes first\n:agents — project instructions file (AGENTS.md), sent with every prompt\n  :agents init | edit | add <text> | rm <line>\n:init — create AGENTS.md with defaults\n:key — set Ollama Cloud API key\n:models — list | :models add/rm — wizards | :models test <id>\n  :models set <id> contextWindow <tok> — window for auto-compact\n:allow <path> / :deny <path> — sandbox\nEsc during work = abort run | Tool prompt: [Y]es [N]o [A]bort (Shift+A always) | ACL prompt: [P]File [F]Parent [N]o [A]bort\nPgUp/PgDn scroll`); return true; }
     pushSystem(`Unknown command ":${c}". Try :help`); return true;
   };
 
@@ -565,18 +566,21 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       const c = char?.toLowerCase();
       if (c === "p") { const r = accessRef.current; accessRef.current = null; setPendingAccess(null); r("allow-file"); }
       else if (c === "f") { const r = accessRef.current; accessRef.current = null; setPendingAccess(null); r("allow-dir"); }
-      else if (c === "n" || key.escape) { const r = accessRef.current; accessRef.current = null; setPendingAccess(null); r("deny"); }
+      else if (c === "n") { const r = accessRef.current; accessRef.current = null; setPendingAccess(null); r("deny"); }
+      else if (c === "a" || key.escape) { const r = accessRef.current; accessRef.current = null; setPendingAccess(null); r("abort"); }
       return;
     }
     if (approvalRef.current) {
       const c = char?.toLowerCase();
       if (c === "t" || c === "y" || key.return) { const r = approvalRef.current; approvalRef.current = null; setPendingTool(null); r("yes"); }
-      else if (c === "n" || key.escape) { const r = approvalRef.current; approvalRef.current = null; setPendingTool(null); r("no"); }
-      else if (c === "a") { const r = approvalRef.current; approvalRef.current = null; setPendingTool(null); if (pendingTool) alwaysRef.current.add(pendingTool.name); r("always"); }
+      else if (c === "n") { const r = approvalRef.current; approvalRef.current = null; setPendingTool(null); r("no"); }
+      else if (c === "a" && key.shift) { const r = approvalRef.current; approvalRef.current = null; setPendingTool(null); if (pendingTool) alwaysRef.current.add(pendingTool.name); r("always"); }
+      else if (c === "a" || key.escape) { const r = approvalRef.current; approvalRef.current = null; setPendingTool(null); r("abort"); }
       return;
     }
     if (key.pageUp) { setScroll((s) => Math.min(maxScroll, s + 5)); return; }
     if (key.pageDown) { setScroll((s) => Math.max(0, s - 5)); return; }
+    if (key.escape && busy && abortRef.current && !accessRef.current && !approvalRef.current) { abortRef.current.abort(); pushSystem("⛔ Aborting…"); return; }
     if (key.escape) { setWizard(null); setHistIdx(-1); pushSystem("Cancelled (Esc — exit only via :exit)."); return; }
     if (key.ctrl && char === "c") exit();
     if (key.tab) {
@@ -610,8 +614,21 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       const toolLog: string[] = [];
       const history = [...historyRef.current];
       try {
-        for await (const chunk of runAgent(effectivePrompt, { modelId, timeoutMs: 300000, history,
+        const ac = new AbortController();
+        abortRef.current = ac;
+        const { checkAccess } = await import("../utils/permissions.js");
+        const autoOk = (name: string, a: any): boolean => {
+          try {
+            if (name === "bash") return false;
+            if (name === "grep" || name === "glob") return checkAccess(a?.path ?? a?.cwd ?? ".", "read").ok;
+            if (name === "read") return checkAccess(a?.path ?? ".", "read").ok;
+            if (name === "edit" || name === "write") return checkAccess(a?.path ?? ".", "write").ok;
+          } catch {}
+          return false;
+        };
+        for await (const chunk of runAgent(effectivePrompt, { modelId, timeoutMs: 300000, history, abortSignal: ac.signal,
           onToolApproval: async (name, args) => {
+            if (autoOk(name, args)) return "yes";
             if (alwaysRef.current.has(name)) return "always";
             return await new Promise<ToolDecision>((resolve) => { approvalRef.current = resolve; setPendingTool({ name, args }); });
           },
@@ -646,13 +663,14 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
           }
         }
       } catch (e: any) {
-        pushError(e.message ?? String(e));
+        if (e?.code === "ABORTED") pushSystem(`⛔ ${e.message}`);
+        else pushError(e.message ?? String(e));
         setMessages((m) => {
           const copy = [...m];
           if (copy[copy.length - 1]?.role === "assistant" && !copy[copy.length - 1].text) copy.pop();
           return copy;
         });
-      } finally { countLOC().then(setLoc); setBusy(false); setScroll(0); }
+      } finally { abortRef.current = null; countLOC().then(setLoc); setBusy(false); setScroll(0); }
     } else if (key.backspace || key.delete) { setInput((s) => s.slice(0, -1)); }
     else if (key.upArrow) {
       if (cmdHistory.length === 0) return;
@@ -732,14 +750,14 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
           <Box flexDirection="column">
             <Text color="red" bold>🔒 ACCESS OUTSIDE PROJECT ({pendingAccess.mode})</Text>
             <Text wrap="truncate">{pendingAccess.target}</Text>
-            <Text bold color="yellow">[P]File  [F]Parent folder  [N]o</Text>
+            <Text bold color="yellow">[P]File  [F]Parent folder  [N]o  [A]bort run</Text>
           </Box>
         )}
         {pendingTool && !pendingAccess && (
           <Box flexDirection="column">
             <Text color="cyan" bold>⚡ Tool: {pendingTool.name}</Text>
             <Text dimColor wrap="truncate">{JSON.stringify(pendingTool.args).slice(0, innerW - 2)}</Text>
-            <Text bold color="yellow">[Y]es  [N]o  [A]lways for {pendingTool.name}</Text>
+            <Text bold color="yellow">[Y]es  [N]o  [A]bort run  (Shift+A = always allow {pendingTool.name})</Text>
           </Box>
         )}
         {suggestion && !busy && <Box><Text dimColor>↹Tab → :{input.slice(1) + suggestion}  ↵Enter executes</Text></Box>}

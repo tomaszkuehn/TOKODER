@@ -13,9 +13,9 @@ const SYSTEM = `You are tokoder, an AI coding agent like opencode/claude-code.
 - CRITICAL: Only write/edit files INSIDE the current project directory (${process.cwd()}). Never write outside it unless user explicitly allows with :allow. If you need a new app, create it under ./ or ./apps/.
 - Environment: OS=${process.platform} ${process.env.WSL_DISTRO_NAME ? `(WSL:${process.env.WSL_DISTRO_NAME})` : ""} cwd=${process.cwd()} WSL=${process.env.WSL_DISTRO_NAME ? "yes" : "available on Windows"}. On Windows use PowerShell syntax (mkdir, dir) or WSL bash via "bash" tool (it auto-routes Linux cmds to wsl).`;
 
-export type ToolDecision = "yes" | "always" | "no";
+export type ToolDecision = "yes" | "always" | "no" | "abort";
 
-export type AccessDecision = "allow-file" | "allow-dir" | "deny";
+export type AccessDecision = "allow-file" | "allow-dir" | "deny" | "abort";
 
 export type AgentOpts = {
   modelId?: string;
@@ -25,6 +25,7 @@ export type AgentOpts = {
   maxSteps?: number;
   onToolApproval?: (name: string, args: any) => Promise<ToolDecision>;
   onAccessRequest?: (tool: string, args: any, mode: "read" | "write" | "execute", target: string) => Promise<AccessDecision>;
+  abortSignal?: AbortSignal;
   onToolCall?: (name: string, args: any) => void;
   onToolResult?: (name: string, result: string) => void;
 };
@@ -43,6 +44,11 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
   const cfg = opts.modelConfig ?? resolveModel(opts.modelId);
   const mdl = getModelFromConfig(cfg);
   const controller = new AbortController();
+  const onExternalAbort = () => controller.abort();
+  if (opts.abortSignal) {
+    if (opts.abortSignal.aborted) onExternalAbort();
+    else opts.abortSignal.addEventListener("abort", onExternalAbort, { once: true });
+  }
   let timeoutFired = false;
   let timeout = setTimeout(() => { timeoutFired = true; controller.abort(); }, opts.timeoutMs ?? 300_000);
   const restartTimer = () => {
@@ -123,6 +129,7 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
       const results: any[] = [];
       for (const c of pendingCalls) {
         const decision = opts.onToolApproval ? await opts.onToolApproval(c.toolName, c.input) : "yes";
+        if (decision === "abort") throw new AgentError("Aborted by user ([A]bort on tool approval)", "ABORTED");
         let output: string;
         if (decision === "no") {
           output = `DENIED by user: "${c.toolName}" was not executed. Ask the user how to proceed.`;
@@ -137,6 +144,7 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
               const target = isAbsolute(rawTarget) ? rawTarget : resolve(process.cwd(), rawTarget);
               const mode: any = output.includes("read") ? "read" : output.includes("workdir") || output.includes("execute") ? "execute" : "write";
               const decision = await opts.onAccessRequest(c.toolName, c.input, mode, target);
+              if (decision === "abort") throw new AgentError(`Aborted by user ([A]bort on ACL prompt for ${target})`, "ABORTED");
               if (decision === "deny") {
                 output = `DENIED by user: access to "${target}" not granted. Ask the user how to proceed.`;
               } else {
@@ -146,6 +154,7 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
               }
             }
           } catch (e: any) {
+            if (e instanceof AgentError) throw e;
             output = `Error: ${e.message ?? String(e)}`;
           }
           opts.onToolResult?.(c.toolName, output.slice(0, 500));
@@ -157,6 +166,7 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
     }
   } finally {
     clearTimeout(timeout);
+    if (opts.abortSignal) opts.abortSignal.removeEventListener("abort", onExternalAbort);
   }
   if (process.env.TOCODER_DEBUG) console.error(`[debug] done sawText=${sawText}`);
   if (!sawText) {
