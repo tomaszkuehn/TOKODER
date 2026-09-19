@@ -176,7 +176,7 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
           opts.onToolCall?.(c.toolName, c.input);
           try {
             const ex = executors[c.toolName];
-            output = ex ? String(await ex(c.input)) : `Error: unknown tool "${c.toolName}"`;
+            output = ex ? String(await ex(c.input, { signal: controller.signal })) : `Error: unknown tool "${c.toolName}"`;
             if (output.startsWith(ACL_MARK) && opts.onAccessRequest) {
               const [, , mode, target, message] = output.split("\u0000");
               const decision = await opts.onAccessRequest(c.toolName, c.input, mode as any, target);
@@ -186,7 +186,7 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
               } else {
                 const { applyAskDecision } = await import("../utils/permissions.js");
                 applyAskDecision(target, mode as any, decision);
-                output = ex ? String(await ex(c.input)) : output;
+                output = ex ? String(await ex(c.input, { signal: controller.signal })) : output;
               }
             }
           } catch (e: any) {
@@ -253,8 +253,13 @@ export async function testConnection(cfg: ModelConfig, timeoutMs = 5000): Promis
 }
 
 export async function runParallel(prompt: string, modelIds: string[]): Promise<Record<string, string>> {
-  const entries = await Promise.all(modelIds.map(async (id) => [id, await runAgentFull(prompt, { modelId: id })] as const));
-  return Object.fromEntries(entries);
+  const settled = await Promise.allSettled(modelIds.map(async (id) => [id, await runAgentFull(prompt, { modelId: id })] as const));
+  const out: Record<string, string> = {};
+  for (const s of settled) {
+    if (s.status === "fulfilled") out[s.value[0]] = s.value[1];
+    else out[modelIds[settled.indexOf(s)]] = `Error: ${s.reason?.message ?? String(s.reason)}`;
+  }
+  return out;
 }
 
 export { listModels };

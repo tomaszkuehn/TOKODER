@@ -1,6 +1,8 @@
 import React, { useEffect, useState, useRef, useMemo } from "react";
 import { Box, Text, useInput, useApp, useStdout } from "ink";
+import { createRequire } from "node:module";
 import { writeSync } from "node:fs";
+const require = createRequire(import.meta.url);
 import { runAgent, testConnection, type ToolDecision, type AccessDecision } from "../core/agent.js";
 import { loadConfig, saveConfig, normalizeCompact, compactLimit, globalConfigPath, localConfigPath, DEFAULT_CONTEXT_WINDOW } from "../core/config.js";
 import { compactHistory, estimateHistoryTokens, COMPACT_MODES, type CompactMode } from "../core/compact.js";
@@ -397,7 +399,7 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
       if (sub === "default") {
         const id = args[1];
         if (!id || !cur.models.find((m) => m.id === id)) { pushSystem(`Usage: :models default <id> — available: ${cur.models.map((m) => m.id).join(", ")}`); return true; }
-        cur.defaultModel = id; saveConfig(cur); reloadCfg(); pushSystem(`Default set to ${id} (saved to ${saveConfig(reloadCfg())})`); return true;
+        cur.defaultModel = id; const savedTo = saveConfig(cur); reloadCfg(); pushSystem(`Default set to ${id} (saved to ${savedTo})`); return true;
       }
       if (sub === "key") {
         const id = args[1]; const key = args.slice(2).join(" ");

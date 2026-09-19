@@ -1,7 +1,8 @@
 import { readdir, stat, readFile } from "node:fs/promises";
 import { join, extname } from "node:path";
 import { execSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 
 const CODE_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".json", ".css", ".md", ".py", ".go", ".rs", ".java", ".kt"]);
 const IGNORE = new Set(["node_modules", "dist", ".git", ".ijfw", "build", ".next", "coverage", "__pycache__"]);
@@ -35,9 +36,10 @@ export async function countLOC(root = process.cwd()): Promise<number> {
 
 export function detectEnvs(): { label: string; ok: boolean }[] {
   const envs: { label: string; ok: boolean }[] = [];
-  const isWSL = !!process.env.WSL_DISTRO_NAME || existsSync("/proc/version") && (() => { try { return readFileSync("/proc/version", "utf-8").toLowerCase().includes("microsoft"); } catch { return false; } })();
+  const isWSL = !!process.env.WSL_DISTRO_NAME || (existsSync("/proc/version") && readFileSync("/proc/version", "utf-8").toLowerCase().includes("microsoft"));
   envs.push({ label: "WSL", ok: isWSL });
-  const androidHome = !!process.env.ANDROID_HOME || !!process.env.ANDROID_SDK_ROOT || existsSync("C:\\Users\\pantomas\\AppData\\Local\\Android\\Sdk") || existsSync(join(process.env.HOME ?? "", "Android/Sdk"));
+  const androidSdk = join(homedir(), "AppData", "Local", "Android", "Sdk");
+  const androidHome = !!process.env.ANDROID_HOME || !!process.env.ANDROID_SDK_ROOT || existsSync(androidSdk) || existsSync(join(homedir(), "Android", "Sdk"));
   let adbOk = false;
   try {
     execSync("adb --version", { stdio: "ignore", timeout: 2000 });
@@ -47,8 +49,6 @@ export function detectEnvs(): { label: string; ok: boolean }[] {
   envs.push({ label: "Node", ok: true });
   return envs;
 }
-
-import { readFileSync } from "node:fs";
 
 export function formatDuration(ms: number): string {
   const s = Math.floor(ms / 1000);

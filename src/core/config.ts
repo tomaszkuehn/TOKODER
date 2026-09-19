@@ -63,7 +63,7 @@ const DEFAULTS: TokoderConfig = {
   defaultModel: "claude-sonnet",
 };
 
-const CANDIDATES = ["tokoder.config.json", ".tokoder.json", "tokoder.config.jsonc"];
+const CANDIDATES = ["tokoder.config.json", ".tokoder.json"];
 
 export function globalConfigPath(): string {
   const home = process.env.USERPROFILE ?? process.env.HOME ?? ".";

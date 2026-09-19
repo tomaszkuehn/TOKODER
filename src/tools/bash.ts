@@ -1,9 +1,45 @@
 import { exec } from "node:child_process";
+import { homedir } from "node:os";
+import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
-import { checkAccess, accessRequest, getProjectRoot } from "../utils/permissions.js";
+import { accessRequest, checkAccess, getProjectRoot } from "../utils/permissions.js";
+import type { ToolCtx } from "./index.js";
 
 const execAsync = promisify(exec);
+
+const T = "[^\\s\"'\\x60;|&<>),]*";
+
+function normalizeTarget(raw: string): string {
+  const mnt = raw.match(/^\/mnt\/([A-Za-z])(?:\/(.*))?$/i);
+  if (mnt) return resolve(`${mnt[1].toUpperCase()}:\\${mnt[2] ?? ""}`);
+  if (raw.startsWith("~")) return resolve(homedir(), raw.slice(1));
+  return resolve(raw);
+}
+
+/** screens a raw bash command for out-of-project targets before execution (sandbox layer) */
+export function screenCommand(command: string): string | null {
+  if (/(^|[\s"'`\x60;|&\\/])\.\.([\s"'`\x60;=|&\\/]|$)/.test(command)) {
+    return `Error: command contains ".." path traversal — sandbox forbids leaving the project directory. Use paths inside ${getProjectRoot()} instead.`;
+  }
+  if (/(^|[\s"'`\x60;|&])\/(\s|$)/.test(command)) {
+    return `Error: command references filesystem root "/" — sandbox forbids touching it.`;
+  }
+  const targets: string[] = [];
+  for (const m of command.matchAll(new RegExp(`(?<![\\w])[A-Za-z]:[\\\\/]${T}`, "g"))) targets.push(m[0]);
+  for (const m of command.matchAll(new RegExp(`\\\\\\\\${T}`, "g"))) targets.push(m[0]);
+  if (/\$HOME\b|%USERPROFILE%|\$env\.?(?:USERPROFILE|HOME)/i.test(command)) targets.push(homedir());
+  for (const m of command.matchAll(new RegExp(`(?<![\\w~])~[\\\\/]${T}`, "g"))) targets.push(m[0]);
+  for (const m of command.matchAll(/(?<![\w~:/])\/(?:mnt\/[A-Za-z](?:\/[^\s"'`;|&<>),]*)?|[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[^\s"'`;|&<>),]*)?)/g)) targets.push(m[0]);
+  for (const raw of targets) {
+    const p = normalizeTarget(raw);
+    const chk = checkAccess(p, "write");
+    if (chk.ok) continue;
+    if (chk.reason === "system") return `Error: DENIED — command touches a Windows system folder ("${raw}"). Never accessible.`;
+    return accessRequest("write", p, `PENDING-APPROVAL: bash command references "${raw}" (→ ${p}) outside the project. User decision required.`);
+  }
+  return null;
+}
 
 export const bashSchema = z.object({
   command: z.string(),
@@ -28,13 +64,12 @@ function isLinuxish(cmd: string): boolean {
   return /(^|\s)(mkdir -p|ls -la|chmod|chown|touch\s+\/|cat\s+\/|echo.*>\s*\/|~\/|\/tmp\/|\/home\/|\/opt\/)/.test(cmd) || /^\s*\//.test(cmd.trim());
 }
 
-export async function bashTool({ command, workdir, timeout }: z.infer<typeof bashSchema>) {
+export async function bashTool({ command, workdir, timeout }: z.infer<typeof bashSchema>, ctx?: ToolCtx) {
   const timeoutMs = timeout && timeout > 0 ? timeout * 1000 : 30000;
   const msCap = 600000;
   const eff = Math.min(timeoutMs, msCap);
-  if (/(^|[\s"'`(=;|&\\/])\.\.([\s"'`=;|&\\/]|$)/.test(command)) {
-    return `Error: command contains ".." path traversal — sandbox forbids leaving the project directory. Use paths inside ${getProjectRoot()} instead.`;
-  }
+  const blocked = screenCommand(command);
+  if (blocked) return blocked;
   if (workdir) {
     const chk = checkAccess(workdir, "execute");
     if (!chk.ok) return chk.reason === "system"
@@ -57,6 +92,7 @@ export async function bashTool({ command, workdir, timeout }: z.infer<typeof bas
       maxBuffer: 1024 * 1024,
       windowsHide: true,
       shell: onWin && !linuxish ? "powershell.exe" : undefined,
+      ...(ctx?.signal ? { signal: ctx.signal } : {}),
     });
     const out = [stdout, stderr].filter(Boolean).join("\n").slice(0, 30000);
     return out || "(no output)";
