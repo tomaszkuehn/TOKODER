@@ -2,6 +2,7 @@ import { streamText, stepCountIs } from "ai";
 import { getModelFromConfig, resolveModel, listModels } from "./providers.js";
 import { agentTools, executors } from "../tools/index.js";
 import { logEntry } from "../utils/logger.js";
+import { ACL_MARK } from "../utils/permissions.js";
 import { buildSystemPrompt } from "./instructions.js";
 import type { ModelConfig } from "./config.js";
 
@@ -138,18 +139,15 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
           try {
             const ex = executors[c.toolName];
             output = ex ? String(await ex(c.input)) : `Error: unknown tool "${c.toolName}"`;
-            if (output.includes("PENDING-APPROVAL") && opts.onAccessRequest) {
-              const rawTarget = String(c.input?.path ?? c.input?.workdir ?? c.input?.pattern ?? "?");
-              const { resolve, isAbsolute } = await import("node:path");
-              const target = isAbsolute(rawTarget) ? rawTarget : resolve(process.cwd(), rawTarget);
-              const mode: any = output.includes("read") ? "read" : output.includes("workdir") || output.includes("execute") ? "execute" : "write";
-              const decision = await opts.onAccessRequest(c.toolName, c.input, mode, target);
+            if (output.startsWith(ACL_MARK) && opts.onAccessRequest) {
+              const [, , mode, target, message] = output.split("\u0000");
+              const decision = await opts.onAccessRequest(c.toolName, c.input, mode as any, target);
               if (decision === "abort") throw new AgentError(`Aborted by user ([A]bort on ACL prompt for ${target})`, "ABORTED");
               if (decision === "deny") {
-                output = `DENIED by user: access to "${target}" not granted. Ask the user how to proceed.`;
+                output = `DENIED by user: access to "${target}" not granted (${message ?? "access request"}). Ask the user how to proceed.`;
               } else {
                 const { applyAskDecision } = await import("../utils/permissions.js");
-                applyAskDecision(target, mode, decision);
+                applyAskDecision(target, mode as any, decision);
                 output = ex ? String(await ex(c.input)) : output;
               }
             }

@@ -63,6 +63,13 @@ export type CheckResult =
   | { ok: false; reason: "system" }
   | { ok: false; reason: "ask"; needs: AccessMode };
 
+/** marker prefix for an access request embedded in tool output (NUL-delimited, cannot appear in file text) */
+export const ACL_MARK = "\u0000TOCODER_ACL_REQ\u0000";
+
+export function accessRequest(mode: AccessMode, target: string, message: string): string {
+  return `${ACL_MARK}${mode}\u0000${target}\u0000${message}`;
+}
+
 export function checkAccess(target: string, mode: AccessMode): CheckResult {
   if (isInsideRoot(target)) return { ok: true };
   const abs = resolve(isAbsolute(target) ? target : resolve(getProjectRoot(), target));
@@ -119,5 +126,5 @@ export function guard(target: string): string | null {
   const res = checkAccess(target, "write");
   if (res.ok) return null;
   if (res.reason === "system") return `DENIED: "${target}" is inside Windows system folder — never accessible.`;
-  return `PENDING-APPROVAL: "${target}" outside project (write=NO by default). User decision required via approval prompt or :acl.`;
+  return accessRequest("write", target, `PENDING-APPROVAL: "${target}" outside project (write=NO by default). User decision required via approval prompt or :acl.`);
 }

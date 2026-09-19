@@ -1,7 +1,7 @@
 import { glob } from "node:fs/promises";
 import { resolve } from "node:path";
 import { z } from "zod";
-import { checkAccess } from "../utils/permissions.js";
+import { checkAccess, accessRequest } from "../utils/permissions.js";
 
 export const globSchema = z.object({
   pattern: z.string().describe('Glob e.g. "src/**/*.ts"'),
@@ -13,7 +13,7 @@ export async function globTool({ pattern, path }: z.infer<typeof globSchema>) {
   const chk = checkAccess(base, "read");
   if (!chk.ok) return chk.reason === "system"
     ? `Error: DENIED — "${base}" is inside Windows system folder.`
-    : `Error: PENDING-APPROVAL read outside project: ${base}`;
+    : accessRequest("read", base, `read outside project denied by rules: ${base}`);
   try {
     const results: string[] = [];
     for await (const entry of glob(pattern, { cwd: base })) {

@@ -1,7 +1,7 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { z } from "zod";
-import { checkAccess } from "../utils/permissions.js";
+import { checkAccess, accessRequest } from "../utils/permissions.js";
 
 const execAsync = promisify(exec);
 
@@ -16,7 +16,7 @@ export async function grepTool({ pattern, include, path }: z.infer<typeof grepSc
   const chk = checkAccess(cwd, "read");
   if (!chk.ok) return chk.reason === "system"
     ? `Error: DENIED — "${cwd}" is inside Windows system folder.`
-    : `Error: PENDING-APPROVAL read outside project: ${cwd}`;
+    : accessRequest("read", cwd, `read outside project denied by rules: ${cwd}`);
   try {
     const filter = include ? `--include="${include}"` : "";
     const cmd = `grep -r -n ${filter} "${pattern.replace(/"/g, '\\"')}" . 2>&1 | head -n 100`;
