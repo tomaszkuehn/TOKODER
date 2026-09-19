@@ -52,7 +52,17 @@ export type TokoderConfig = {
   models: ModelConfig[];
   defaultModel: string;
   compact?: Partial<CompactConfig>;
+  /** agent loop step budget (0 = unlimited) */
+  maxSteps?: number;
 };
+
+export const DEFAULT_MAX_STEPS = 100;
+
+export function normalizeMaxSteps(v: unknown): number {
+  const n = typeof v === "number" ? v : parseInt(String(v ?? ""), 10);
+  if (!Number.isFinite(n) || n < 0) return DEFAULT_MAX_STEPS;
+  return Math.floor(n);
+}
 
 const DEFAULTS: TokoderConfig = {
   models: [
@@ -112,7 +122,8 @@ export function loadConfig(cwd = process.cwd()): TokoderConfig {
   const defaultModel =
     l?.defaultModel ?? g?.defaultModel ?? (models.find((m) => m.id === DEFAULTS.defaultModel)?.id ?? models[0]?.id ?? DEFAULTS.defaultModel);
   const compact = { ...(g?.compact ?? {}), ...(l?.compact ?? {}) };
-  return { models, defaultModel: models.find((m) => m.id === defaultModel) ? defaultModel : models[0]?.id ?? defaultModel, compact };
+  const maxSteps = normalizeMaxSteps(l?.maxSteps ?? g?.maxSteps);
+  return { models, defaultModel: models.find((m) => m.id === defaultModel) ? defaultModel : models[0]?.id ?? defaultModel, compact, maxSteps };
 }
 
 export function saveConfig(cfg: TokoderConfig, cwd = process.cwd(), scope?: "global" | "local"): string {

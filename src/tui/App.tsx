@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { writeSync } from "node:fs";
 const require = createRequire(import.meta.url);
 import { runAgent, testConnection, type ToolDecision, type AccessDecision } from "../core/agent.js";
-import { loadConfig, saveConfig, normalizeCompact, compactLimit, globalConfigPath, localConfigPath, DEFAULT_CONTEXT_WINDOW } from "../core/config.js";
+import { loadConfig, saveConfig, normalizeCompact, compactLimit, normalizeMaxSteps, globalConfigPath, localConfigPath, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_STEPS } from "../core/config.js";
 import { compactHistory, estimateHistoryTokens, COMPACT_MODES, type CompactMode } from "../core/compact.js";
 import { countLOC, detectEnvs, formatDuration, estimateTokens } from "../utils/stats.js";
 import { setEnvKey, maskKey } from "../utils/env.js";
@@ -48,6 +48,8 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
   const approvalRef = useRef<((d: ToolDecision) => void) | null>(null);
   const alwaysRef = useRef<Set<string>>(new Set());
   const abortRef = useRef<AbortController | null>(null);
+  /** set when user says "continue" after a step-limit stop → next run gets unlimited budget, then reset */
+  const continueRef = useRef(false);
   const [tokenStats, setTokenStats] = useState<Record<string, { sent: number; recv: number }>>({});
   const [loc, setLoc] = useState<number | null>(null);
   const [elapsed, setElapsed] = useState(0);
@@ -188,7 +190,7 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
     setModelId(next.id);
   };
 
-  const COMMANDS = ["exit", "quit", "q", "compact", "compact-mode", "compact-auto", "agents", "init", "clear", "models", "key", "help", "allow", "deny", "session"] as const;
+  const COMMANDS = ["exit", "quit", "q", "compact", "compact-mode", "compact-auto", "steps", "agents", "init", "clear", "models", "key", "help", "allow", "deny", "session"] as const;
   const MODEL_SUBS = ["add", "rm", "default", "key", "test", "set"] as const;
 
   const getSuggestion = (raw: string): string | null => {
@@ -350,6 +352,20 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
       persistSession();
       return true;
     }
+    if (c === "steps") {
+      const cur = reloadCfg();
+      if (!args[0]) {
+        pushSystem(`Step limit: ${normalizeMaxSteps(cur.maxSteps)}${normalizeMaxSteps(cur.maxSteps) === 0 ? " (unlimited)" : ` steps per run (0 = unlimited)`}\nAfter hitting the limit, say "continue" — budget resets and the run resumes with a fresh budget.\nChange: :steps <n> (saved to ${localConfigPath() ?? globalConfigPath()})`);
+        return true;
+      }
+      const n = parseInt(args[0], 10);
+      if (!Number.isFinite(n) || n < 0) { pushSystem("Steps: >= 0 (0 = unlimited). Usage: :steps <n>"); return true; }
+      cur.maxSteps = n;
+      saveConfig(cur); reloadCfg();
+      continueRef.current = false;
+      pushSystem(`✓ Step limit: ${n === 0 ? "unlimited" : `${n} steps per run`} (saved to ${localConfigPath() ?? globalConfigPath()})`);
+      return true;
+    }
     if (c === "session") {
       const { sessionExists } = await import("../core/session.js");
       if (args[0] === "reset" || args[0] === "clear") {
@@ -499,7 +515,7 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
       pushSystem(r.created ? `✓ Created ${r.path} with default content (≈${tok} tok sent with every prompt)` : `${r.path} already exists — see :agents`);
       return true;
     }
-    if (["help", "h", "?"].includes(c)) { pushSystem(`Commands:\n:exit / :q — exit\n:compact [instruction] — compact history (mode: :compact-mode)\n  examples: :compact keep the implementation plan\n             :compact focus on decisions and file paths\n             :compact keep open threads and next steps\n:compact-mode <reduce|balance|value> — compact strategy\n:compact-auto <on|off|percent|tokens <n>> — auto-trigger: % of context window OR absolute token limit, whichever comes first\n:agents — project instructions file (AGENTS.md), sent with every prompt\n  :agents init | edit | add <text> | rm <line>\n:init — create AGENTS.md with defaults\n:key — set Ollama Cloud API key\n:models — list | :models add/rm — wizards | :models test <id>\n  :models set <id> contextWindow <tok> — window for auto-compact\n:allow <path> / :deny <path> — sandbox\n:session — info | :session reset — clear saved session (tocoder -c resumes)\nEsc during work = abort run | Tool prompt: [Y]es [N]o [A]bort (Shift+A always) | ACL prompt: [P]File [F]Parent [N]o [A]bort\nPgUp/PgDn scroll`); return true; }
+    if (["help", "h", "?"].includes(c)) { pushSystem(`Commands:\n:exit / :q — exit\n:compact [instruction] — compact history (mode: :compact-mode)\n  examples: :compact keep the implementation plan\n             :compact focus on decisions and file paths\n             :compact keep open threads and next steps\n:compact-mode <reduce|balance|value> — compact strategy\n:compact-auto <on|off|percent|tokens <n>> — auto-trigger: % of context window OR absolute token limit, whichever comes first\n:steps <n> — agent step budget per run (0 = unlimited); "continue" after limit resets the budget\n:agents — project instructions file (AGENTS.md), sent with every prompt\n  :agents init | edit | add <text> | rm <line>\n:init — create AGENTS.md with defaults\n:key — set Ollama Cloud API key\n:models — list | :models add/rm — wizards | :models test <id>\n  :models set <id> contextWindow <tok> — window for auto-compact\n:allow <path> / :deny <path> — sandbox\n:session — info | :session reset — clear saved session (tocoder -c resumes)\nEsc during work = abort run | Tool prompt: [Y]es [N]o [A]bort (Shift+A always) | ACL prompt: [P]File [F]Parent [N]o [A]bort\nPgUp/PgDn scroll`); return true; }
     pushSystem(`Unknown command ":${c}". Try :help`); return true;
   };
 
@@ -649,6 +665,9 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
       }
       setMessages((m) => [...m, { role: "user", text: prompt }]);
       setBusy(true); setLastErr(null);
+      const isContinue = /^\s*(continue|kontynuuj|dalej|cd)\s*$/i.test(prompt);
+      const useContinue = isContinue && continueRef.current;
+      if (useContinue) continueRef.current = false;
       let usageSent = false, usageRecv = false;
       let acc = ""; setMessages((m) => [...m, { role: "assistant", text: "" }]);
       const toolLog: string[] = [];
@@ -675,6 +694,7 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
           return false;
         };
         for await (const chunk of runAgent(effectivePrompt, { modelId, timeoutMs: 300000, history, abortSignal: ac.signal,
+          maxSteps: useContinue ? 0 : normalizeMaxSteps(cfgRef.current.maxSteps),
           onToolApproval: async (name, args) => {
             if (autoOk(name, args)) return "yes";
             if (alwaysRef.current.has(name)) return "always";
@@ -703,6 +723,7 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
         historyRef.current = [...history, { role: "user" as const, content: effectivePrompt }, { role: "assistant" as const, content: acc }].slice(-40);
         setCtxUsed(Math.max(ctxUsed, estimateHistoryTokens(historyRef.current)));
         persistSession();
+        if (/step limit \(\d+\) reached/.test(acc) && !useContinue) continueRef.current = true;
         const cc = normalizeCompact(cfgRef.current.compact);
         if (cc.autoTrigger) {
           const ctx = active.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
