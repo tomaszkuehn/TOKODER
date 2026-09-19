@@ -72,7 +72,7 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
   const curTok = tokenStats[modelId] ?? { sent: 0, recv: 0 };
   const totTok = usedModels.reduce((a, id) => ({ sent: a.sent + tokenStats[id].sent, recv: a.recv + tokenStats[id].recv }), { sent: 0, recv: 0 });
   const ctxWindow = active.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
-  const ctxUsed = estimateHistoryTokens(historyRef.current);
+  const [ctxUsed, setCtxUsed] = useState(() => estimateHistoryTokens(historyRef.current));
   const ctxPct = Math.min(999, Math.round((ctxUsed / ctxWindow) * 100));
   const ctxLabel = ctxWindow >= 1_000_000 ? `${ctxWindow / 1_000_000}M` : `${Math.round(ctxWindow / 1000)}k`;
 
@@ -255,6 +255,7 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
         { role: "assistant" as const, content: "Understood. Continuing with the summarized context." },
         ...res.kept,
       ];
+      setCtxUsed(estimateHistoryTokens(historyRef.current));
       pushSystem(`✓ Compact (${res.mode}): -${res.removed} messages, context ≈${estimateHistoryTokens(historyRef.current)} tok${res.instruction ? ", instruction applied" : ""}`);
       persistSession();
     } catch (e: any) {
@@ -352,6 +353,7 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
       if (args[0] === "reset" || args[0] === "clear") {
         clearSession();
         historyRef.current = [];
+        setCtxUsed(0);
         setMessages([{ role: "system", text: "Session cleared — next start begins fresh." }]);
         return true;
       }
@@ -678,7 +680,9 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
           onAccessRequest: async (tool, _args, mode, target) => {
             return await new Promise<AccessDecision>((resolve) => { accessRef.current = resolve; setPendingAccess({ tool, mode, target }); });
           },
-          onToolCall: (n, a) => { const line = `→ ${n} ${JSON.stringify(a).slice(0, 120)}`; toolLog.push(line); pushSystem(line); }, onToolResult: (n, r) => { pushSystem(`← ${n}: ${r.slice(0, 120)}`); } }, (u) => {
+          onToolCall: (n, a) => { const line = `→ ${n} ${JSON.stringify(a).slice(0, 120)}`; toolLog.push(line); pushSystem(line); }, onToolResult: (n, r) => { pushSystem(`← ${n}: ${r.slice(0, 120)}`); },
+          onContext: (tok) => { setCtxUsed(tok); },
+        }, (u) => {
           if (u.inputTokens > 0) { usageSent = true; bumpTokens(modelId, u.inputTokens, 0); }
           if (u.outputTokens > 0) { usageRecv = true; bumpTokens(modelId, 0, u.outputTokens); }
         })) {
@@ -694,6 +698,7 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
         if (!usageSent) bumpTokens(modelId, estimateTokens(prompt), 0);
         if (!usageRecv && acc.trim()) bumpTokens(modelId, 0, estimateTokens(acc));
         historyRef.current = [...history, { role: "user" as const, content: effectivePrompt }, { role: "assistant" as const, content: acc }].slice(-40);
+        setCtxUsed(Math.max(ctxUsed, estimateHistoryTokens(historyRef.current)));
         persistSession();
         const cc = normalizeCompact(cfgRef.current.compact);
         if (cc.autoTrigger) {

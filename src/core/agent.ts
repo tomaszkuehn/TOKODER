@@ -29,9 +29,30 @@ export type AgentOpts = {
   abortSignal?: AbortSignal;
   onToolCall?: (name: string, args: any) => void;
   onToolResult?: (name: string, result: string) => void;
+  onContext?: (usedTokens: number) => void;
 };
 
 export type Usage = { inputTokens: number; outputTokens: number; totalTokens: number };
+
+/** rough context estimate actually sent to the model (chars/4 + overhead per message + per tool result) */
+function estimateMsgsTokens(msgs: any[]): number {
+  let chars = 0;
+  let count = 0;
+  for (const m of msgs) {
+    count++;
+    if (typeof m.content === "string") chars += m.content.length;
+    else if (Array.isArray(m.content)) {
+      for (const p of m.content) {
+        if (typeof p === "string") chars += p.length;
+        else if (p?.text) chars += p.text.length;
+        else if (p?.toolCall) chars += JSON.stringify(p.toolCall.input ?? "").length + 40;
+        else if (p?.output?.value != null) chars += String(p.output.value).length;
+        else if (p?.content != null) chars += String(p.content).length;
+      }
+    }
+  }
+  return Math.ceil(chars / 4) + count * 8 + 24; // +24: system prompt floor
+}
 
 export class AgentError extends Error {
   code?: string;
@@ -68,6 +89,7 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
   try {
     for (let step = 0; step < maxSteps; step++) {
       logEntry("TO-MODEL", cfg.id, JSON.stringify({ step, messages: msgs }, null, 2));
+      opts.onContext?.(estimateMsgsTokens(msgs));
       let result: any;
       try {
         result = streamText({
