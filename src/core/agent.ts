@@ -179,6 +179,8 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
       restartTimer();
       lastHadTools = true;
     }
+    logEntry("TOOL-LIMIT", cfg.id, `maxSteps=${maxSteps} reached — agent stopped after tool results with no final text. User should ask to continue or raise maxSteps.`);
+    yield "\n[⚠ stopped: step limit (20) reached after tool calls — say \"continue\" to resume]";
   } finally {
     clearTimeout(timeout);
     if (opts.abortSignal) opts.abortSignal.removeEventListener("abort", onExternalAbort);
