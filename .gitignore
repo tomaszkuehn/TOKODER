@@ -1,8 +1,13 @@
 node_modules/
 dist/
 .env
+.env.local
 .ijfw/
 .DS_Store
 *.log
+*.tmp
 coverage/
 .turbo/
+out/
+.vscode/
+.idea/
