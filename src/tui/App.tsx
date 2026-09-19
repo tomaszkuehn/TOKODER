@@ -34,17 +34,32 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
     return () => clearInterval(id);
   }, []);
 
+  const altScreen = process.env.TOCODER_ALT_SCREEN !== "0";
+  const transcriptRef = useRef<typeof messages>([] as any);
+  useEffect(() => { transcriptRef.current = messages; }, [messages]);
+
   useEffect(() => {
-    if (!stdout.isTTY) return;
+    if (!stdout.isTTY || !altScreen) return;
     stdout.write("\x1b[?1049h\x1b[?25l");
+    const dumpTranscript = () => {
+      const msgs = transcriptRef.current;
+      if (msgs.length) {
+        stdout.write("\x1b[?1049l\x1b[?25h");
+        stdout.write("\n— tocoder transcript —\n");
+        for (const m of msgs) {
+          const tag = m.role === "user" ? "› YOU:" : m.role === "error" ? "✗ ERR:" : m.role === "system" ? "◆ SYS:" : "● AI:";
+          stdout.write(`${tag} ${m.text}\n`);
+        }
+      } else stdout.write("\x1b[?1049l\x1b[?25h");
+    };
     const restore = () => stdout.write("\x1b[?1049l\x1b[?25h");
-    const onExit = () => restore();
+    const onExit = () => dumpTranscript();
     process.on("exit", onExit);
     return () => {
       process.off("exit", onExit);
       restore();
     };
-  }, [stdout]);
+  }, [stdout, altScreen]);
 
   useEffect(() => { setScroll(0); }, [messages.length]);
 
