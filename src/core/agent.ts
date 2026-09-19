@@ -131,7 +131,9 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
             const ex = executors[c.toolName];
             output = ex ? String(await ex(c.input)) : `Error: unknown tool "${c.toolName}"`;
             if (output.includes("PENDING-APPROVAL") && opts.onAccessRequest) {
-              const target = String(c.input?.path ?? c.input?.workdir ?? c.input?.pattern ?? "?");
+              const rawTarget = String(c.input?.path ?? c.input?.workdir ?? c.input?.pattern ?? "?");
+              const { resolve, isAbsolute } = await import("node:path");
+              const target = isAbsolute(rawTarget) ? rawTarget : resolve(process.cwd(), rawTarget);
               const mode: any = output.includes("read") ? "read" : output.includes("workdir") || output.includes("execute") ? "execute" : "write";
               const decision = await opts.onAccessRequest(c.toolName, c.input, mode, target);
               if (decision === "deny") {
