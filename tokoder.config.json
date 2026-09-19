@@ -1,0 +1,24 @@
+{
+  "models": [
+    {
+      "id": "claude-sonnet",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-20250514",
+      "apiKeyEnv": "ANTHROPIC_API_KEY"
+    },
+    {
+      "id": "gpt-4o",
+      "provider": "openai",
+      "model": "gpt-4o",
+      "apiKeyEnv": "OPENAI_API_KEY"
+    },
+    {
+      "id": "gemini-flash",
+      "provider": "openrouter",
+      "model": "google/gemini-2.0-flash-001",
+      "apiKeyEnv": "OPENROUTER_API_KEY",
+      "baseURL": "https://openrouter.ai/api/v1"
+    }
+  ],
+  "defaultModel": "claude-sonnet"
+}
