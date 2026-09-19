@@ -31,7 +31,8 @@ program
     if (!promptParts.length) {
       const modelId = opts.model as string | undefined;
       if (modelId) resolveModel(modelId);
-      render(React.createElement(App, { initialModel: modelId }));
+      const inst = render(React.createElement(App, { initialModel: modelId }), { exitOnCtrlC: false });
+      await inst.waitUntilExit();
       return;
     }
     const prompt = promptParts.join(" ");
@@ -50,7 +51,8 @@ program
       console.log(out);
       return;
     }
-    render(React.createElement(App, { initialPrompt: prompt, initialModel: modelId }));
+    const inst = render(React.createElement(App, { initialPrompt: prompt, initialModel: modelId }), { exitOnCtrlC: false });
+    await inst.waitUntilExit();
   });
 
 program.parse();

@@ -1,11 +1,12 @@
 import React, { useEffect, useState, useRef } from "react";
-import { Box, Text, useInput, useApp } from "ink";
+import { Box, Text, useInput, useApp, useStdout } from "ink";
 import { runAgent } from "../core/agent.js";
 import { listModels } from "../core/providers.js";
 import { countLOC, detectEnvs, formatDuration, estimateTokens } from "../utils/stats.js";
 
 export function App({ initialPrompt, initialModel }: { initialPrompt?: string; initialModel?: string }) {
   const { exit } = useApp();
+  const { stdout } = useStdout();
   const cfg = listModels();
   const [modelId, setModelId] = useState(initialModel ?? cfg.defaultModel);
   const [input, setInput] = useState(initialPrompt ?? "");
@@ -23,6 +24,18 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
     const id = setInterval(() => setElapsed(Date.now() - startRef.current), 1000);
     return () => clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    if (!stdout.isTTY) return;
+    stdout.write("\x1b[?1049h\x1b[?25l");
+    const restore = () => stdout.write("\x1b[?1049l\x1b[?25h");
+    const onExit = () => restore();
+    process.on("exit", onExit);
+    return () => {
+      process.off("exit", onExit);
+      restore();
+    };
+  }, [stdout]);
 
   const cycleModel = (dir: 1 | -1) => {
     const idx = cfg.models.findIndex((m) => m.id === modelId);
@@ -68,7 +81,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
   const active = cfg.models.find((m) => m.id === modelId)!;
 
   return (
-    <Box flexDirection="column" paddingX={1}>
+    <Box flexDirection="column" paddingX={1} width={stdout.columns} height={stdout.rows}>
       <Box borderStyle="round" borderColor="cyan" paddingX={1} flexDirection="column">
         <Box>
           <Text bold color="cyan">tocoder</Text>
