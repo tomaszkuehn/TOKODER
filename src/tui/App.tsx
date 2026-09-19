@@ -291,8 +291,14 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       const wasCmd = prompt.startsWith(":");
       if (await handleCommand(prompt)) { setCmdHistory((h) => [...h, prompt].slice(-100)); return; }
       setCmdHistory((h) => [...h, prompt].slice(-100));
-      const isChoice = /^\s*[1-3]\s*$/.test(prompt) && historyRef.current.length > 0;
-      const effectivePrompt = isChoice ? `My choice is "${prompt.trim()}". Continue with option ${prompt.trim()} from your last list.` : prompt;
+      const isChoice = /^\s*[1-9]\s*$/.test(prompt) && historyRef.current.length > 0;
+      let effectivePrompt = prompt;
+      if (isChoice) {
+        const n = prompt.trim();
+        const lastAi = [...messages].reverse().find((m) => m.role === "assistant");
+        const opt = lastAi?.text.match(new RegExp(`^\\s*${n}[.)\\-]\\s*(.+)$`, "m"));
+        effectivePrompt = opt ? `My choice is option ${n}: "${opt[1].trim()}". Continue.` : `My choice is option ${n} from your last list. Continue.`;
+      }
       setMessages((m) => [...m, { role: "user", text: prompt }]);
       setBusy(true); setLastErr(null);
       setSent((s) => s + estimateTokens(prompt));
@@ -300,7 +306,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       const toolLog: string[] = [];
       const history = [...historyRef.current];
       try {
-        for await (const chunk of runAgent(effectivePrompt, { modelId, timeoutMs: 60000, history, onToolCall: (n, a) => { const line = `→ ${n} ${JSON.stringify(a).slice(0, 120)}`; toolLog.push(line); pushSystem(line); }, onToolResult: (n, r) => { pushSystem(`← ${n}: ${r.slice(0, 120)}`); } }, (u) => {
+        for await (const chunk of runAgent(effectivePrompt, { modelId, timeoutMs: 300000, history, onToolCall: (n, a) => { const line = `→ ${n} ${JSON.stringify(a).slice(0, 120)}`; toolLog.push(line); pushSystem(line); }, onToolResult: (n, r) => { pushSystem(`← ${n}: ${r.slice(0, 120)}`); } }, (u) => {
           setSent((s) => s + u.inputTokens - estimateTokens(prompt));
           setRecv((r) => r + u.outputTokens);
         })) {

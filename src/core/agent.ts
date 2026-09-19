@@ -1,4 +1,4 @@
-import { streamText } from "ai";
+import { streamText, stepCountIs } from "ai";
 import { getModelFromConfig, resolveModel, listModels } from "./providers.js";
 import { tools } from "../tools/index.js";
 import type { ModelConfig } from "./config.js";
@@ -34,7 +34,8 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
   const cfg = opts.modelConfig ?? resolveModel(opts.modelId);
   const mdl = getModelFromConfig(cfg);
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), opts.timeoutMs ?? 60_000);
+  let timeoutFired = false;
+  const timeout = setTimeout(() => { timeoutFired = true; controller.abort(); }, opts.timeoutMs ?? 300_000);
   let result: any;
   try {
     const msgs = opts.history?.length
@@ -45,7 +46,7 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
       system: SYSTEM,
       ...(msgs ? { messages: msgs } : { prompt }),
       tools,
-      maxSteps: 20,
+      stopWhen: stepCountIs(20),
       abortSignal: controller.signal,
     } as any);
   } catch (e: any) {
@@ -68,7 +69,7 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
       }
     }
   } catch (e: any) {
-    if (e.name === "AbortError") throw new AgentError(`[${cfg.id}] timeout after ${(opts.timeoutMs ?? 60000) / 1000}s — is ${cfg.baseURL ?? cfg.provider} reachable?`, "TIMEOUT");
+    if (e.name === "AbortError") throw new AgentError(`[${cfg.id}] timeout after ${(opts.timeoutMs ?? 300000) / 1000}s — is ${cfg.baseURL ?? cfg.provider} reachable?`, "TIMEOUT");
     const msg = e.message ?? String(e);
     if (msg.includes("Missing Authentication") || msg.includes("No auth") || msg.includes("API key"))
       throw new AgentError(`[${cfg.id}] Missing Authentication — no key for ${cfg.apiKeyEnv ?? "OPENROUTER_API_KEY"}. Fix: :models key ${cfg.id} sk-or-...  then :models test ${cfg.id}`, "401");
@@ -80,6 +81,11 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
   } finally {
     clearTimeout(timeout);
   }
+  if (timeoutFired) throw new AgentError(`[${cfg.id}] timeout after ${(opts.timeoutMs ?? 300000) / 1000}s — model was still working (tools). Retry with higher --timeout`, "TIMEOUT");
+  let fr: any = null;
+  try { fr = await (result as any).finishReason; } catch {}
+  if (fr === "length") yield "\n[⚠ output truncated — max tokens reached; ask to continue]";
+  if (process.env.TOCODER_DEBUG) console.error(`[debug] finishReason=${JSON.stringify(fr)} timeoutFired=${timeoutFired}`);
   if (!sawText) {
     try {
       const steps: any[] = await result.steps;
