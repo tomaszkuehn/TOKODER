@@ -82,6 +82,48 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
     setModelId(next.id);
   };
 
+  const COMMANDS = ["exit", "quit", "q", "compact", "clear", "models", "help"] as const;
+  const MODEL_SUBS = ["add", "rm", "default", "key", "test", "set"] as const;
+
+  const getSuggestion = (raw: string): string | null => {
+    if (!raw.startsWith(":")) return null;
+    const after = raw.slice(1);
+    if (!after) return null;
+    const parts = after.split(/\s+/);
+    if (parts.length === 1) {
+      const p = parts[0].toLowerCase();
+      if ((COMMANDS as readonly string[]).includes(p)) return null;
+      const hits = (COMMANDS as readonly string[]).filter((c) => c.startsWith(p));
+      if (hits.length === 1) return hits[0].slice(p.length);
+      return null;
+    }
+    if (parts[0].toLowerCase() === "models" && parts.length === 2) {
+      const p = parts[1].toLowerCase();
+      if ((MODEL_SUBS as readonly string[]).includes(p)) return null;
+      const hits = (MODEL_SUBS as readonly string[]).filter((c) => c.startsWith(p));
+      if (hits.length === 1) return hits[0].slice(p.length);
+    }
+    return null;
+  };
+
+  const completeInput = (raw: string): string => {
+    if (!raw.startsWith(":")) return raw;
+    const after = raw.slice(1);
+    const parts = after.split(/\s+/);
+    if (parts.length === 1) {
+      const p = parts[0].toLowerCase();
+      const hits = (COMMANDS as readonly string[]).filter((c) => c.startsWith(p));
+      if (hits.length === 1) return ":" + hits[0];
+      if (hits.length > 1 && hits.includes(p)) return raw;
+    }
+    if (parts[0].toLowerCase() === "models" && parts.length === 2) {
+      const p = parts[1].toLowerCase();
+      const hits = (MODEL_SUBS as readonly string[]).filter((c) => c.startsWith(p));
+      if (hits.length === 1) return `:models ${hits[0]}`;
+    }
+    return raw;
+  };
+
   const pushSystem = (text: string) => setMessages((m) => [...m, { role: "system", text }]);
   const pushError = (text: string) => {
     setLastErr(text);
@@ -183,9 +225,17 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
     if (key.pageUp) { setScroll((s) => s + 5); return; }
     if (key.pageDown) { setScroll((s) => Math.max(0, s - 5)); return; }
     if (key.escape || (key.ctrl && char === "c")) exit();
-    if (key.tab) { cycleModel(key.shift ? -1 : 1); return; }
+    if (key.tab) {
+      const sug = getSuggestion(input);
+      if (input.startsWith(":") && sug) { setInput((s) => s + sug); return; }
+      cycleModel(key.shift ? -1 : 1); return;
+    }
     if (key.return && !busy && input.trim()) {
-      const prompt = input; setInput("");
+      let prompt = input; setInput("");
+      if (prompt.startsWith(":")) {
+        const completed = completeInput(prompt);
+        if (completed !== prompt) prompt = completed;
+      }
       if (await handleCommand(prompt)) return;
       setMessages((m) => [...m, { role: "user", text: prompt }]);
       setBusy(true); setLastErr(null);
@@ -219,6 +269,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
 
   const active = cfg.models.find((m) => m.id === modelId)!;
   const isCmd = input.startsWith(":");
+  const suggestion = getSuggestion(input);
   const moreAbove = messages.length > visible.length && scroll < messages.length;
   const moreBelow = scroll > 0;
 
@@ -254,9 +305,10 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
 
       <Box flexShrink={0} borderStyle="round" borderColor={isCmd ? "yellow" : lastErr ? "red" : "magenta"} marginTop={1} paddingX={1}>
         <Text color={isCmd ? "yellow" : "magenta"} bold>{isCmd ? ":" : "›"} </Text>
-        <Text color={busy ? "gray" : isCmd ? "yellow" : "yellow"}>{busy ? "(zajęty…)" : isCmd ? input.slice(1) : input}<Text backgroundColor={busy ? undefined : isCmd ? "yellow" : "white"} color={isCmd ? "black" : "white"}> </Text></Text>
+        <Text color={busy ? "gray" : isCmd ? "yellow" : "yellow"}>{busy ? "(zajęty…)" : isCmd ? input.slice(1) : input}{suggestion && !busy ? <Text dimColor>{suggestion}</Text> : null}<Text backgroundColor={busy ? undefined : isCmd ? "yellow" : "white"} color={isCmd ? "black" : "white"}> </Text></Text>
+        {suggestion && !busy && <Text dimColor> ↹Tab {isCmd ? input.slice(1) + suggestion : ""}  ↵Enter executes</Text>}
       </Box>
-      <Box flexShrink={0}><Text dimColor> PgUp/PgDn/↑↓ scroll | :models test {modelId} | {visible.length}/{messages.length} msgs</Text></Box>
+      <Box flexShrink={0}><Text dimColor> PgUp/PgDn/↑↓ scroll | :models test {modelId} | {visible.length}/{messages.length} msgs{suggestion ? ` | suggestion: :${input.slice(1) + suggestion}` : ""}</Text></Box>
     </Box>
   );
 }
