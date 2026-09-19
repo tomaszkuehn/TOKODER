@@ -70,9 +70,11 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
   } catch (e: any) {
     if (e.name === "AbortError") throw new AgentError(`[${cfg.id}] timeout after ${(opts.timeoutMs ?? 60000) / 1000}s — is ${cfg.baseURL ?? cfg.provider} reachable?`, "TIMEOUT");
     const msg = e.message ?? String(e);
+    if (msg.includes("Missing Authentication") || msg.includes("No auth") || msg.includes("API key"))
+      throw new AgentError(`[${cfg.id}] Missing Authentication — no key for ${cfg.apiKeyEnv ?? "OPENROUTER_API_KEY"}. Fix: :models key ${cfg.id} sk-or-...  then :models test ${cfg.id}`, "401");
     if (msg.includes("ECONNREFUSED") || msg.includes("Failed to fetch") || msg.includes("fetch failed"))
       throw new AgentError(`[${cfg.id}] connection failed → ${cfg.baseURL ?? cfg.provider} not reachable. Is Ollama running? (ollama serve)`, "ECONNREFUSED");
-    if (msg.includes("401") || msg.includes("Unauthorized")) throw new AgentError(`[${cfg.id}] 401 Unauthorized — wrong API key (${cfg.apiKeyEnv})`, "401");
+    if (msg.includes("401") || msg.includes("Unauthorized")) throw new AgentError(`[${cfg.id}] 401 Unauthorized — wrong API key (${cfg.apiKeyEnv}) — :models key ${cfg.id} <key>`, "401");
     if (msg.includes("404")) throw new AgentError(`[${cfg.id}] 404 model "${cfg.model}" not found on ${cfg.baseURL ?? cfg.provider}`, "404");
     throw new AgentError(`[${cfg.id}] ${msg}`, e.code);
   } finally {
