@@ -256,18 +256,21 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       setBusy(true); setLastErr(null);
       setSent((s) => s + estimateTokens(prompt));
       let acc = ""; setMessages((m) => [...m, { role: "assistant", text: "" }]);
+      const toolLog: string[] = [];
       try {
-        for await (const chunk of runAgent(prompt, { modelId, timeoutMs: 60000 }, (u) => {
+        for await (const chunk of runAgent(prompt, { modelId, timeoutMs: 60000, onToolCall: (n, a) => { const line = `→ ${n} ${JSON.stringify(a).slice(0, 120)}`; toolLog.push(line); pushSystem(line); }, onToolResult: (n, r) => { pushSystem(`← ${n}: ${r.slice(0, 120)}`); } }, (u) => {
           setSent((s) => s + u.inputTokens - estimateTokens(prompt));
           setRecv((r) => r + u.outputTokens);
         })) {
           acc += chunk;
           setMessages((m) => {
-            const copy = [...m]; copy[copy.length - 1] = { role: "assistant", text: acc }; return copy;
+            const copy = [...m]; copy[copy.length - 1] = { role: "assistant", text: acc || (toolLog.length ? `[working… ${toolLog[toolLog.length - 1]}]` : "…") }; return copy;
           });
         }
-        if (!acc) pushError(`[${modelId}] empty — :models test ${modelId}`);
-        else setRecv((r) => r + estimateTokens(acc));
+        if (!acc.trim()) {
+          if (toolLog.length) { acc = `[done — tools: ${toolLog.join(", ")}]`; setMessages((m) => { const c=[...m]; c[c.length-1]={role:"assistant", text:acc}; return c; }); }
+          else pushError(`[${modelId}] empty — :models test ${modelId}`);
+        } else setRecv((r) => r + estimateTokens(acc));
       } catch (e: any) {
         pushError(e.message ?? String(e));
         setMessages((m) => {

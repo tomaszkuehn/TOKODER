@@ -6,13 +6,16 @@ import type { ModelConfig } from "./config.js";
 const SYSTEM = `You are tokoder, an AI coding agent like opencode/claude-code.
 - Be concise, use tools to inspect and modify code.
 - Prefer read -> edit/write loop, verify with bash.
-- Use glob/grep to explore codebase.`;
+- Use glob/grep to explore codebase.
+- Always explain what you did in final text answer, even if you used tools.`;
 
 export type AgentOpts = {
   modelId?: string;
   modelConfig?: ModelConfig;
   cwd?: string;
   timeoutMs?: number;
+  onToolCall?: (name: string, args: any) => void;
+  onToolResult?: (name: string, result: string) => void;
 };
 
 export type Usage = { inputTokens: number; outputTokens: number; totalTokens: number };
@@ -44,8 +47,21 @@ export async function* runAgent(prompt: string, opts: AgentOpts = {}, onUsage?: 
     clearTimeout(timeout);
     throw new AgentError(`[${cfg.id}] init failed: ${e.message} (check baseURL/model/key)`, e.code);
   }
+  let sawText = false;
   try {
-    for await (const chunk of result.textStream) yield chunk;
+    for await (const part of result.fullStream as AsyncIterable<any>) {
+      if (part.type === "text-delta") {
+        sawText = true;
+        yield part.text as string;
+      } else if (part.type === "tool-call") {
+        opts.onToolCall?.(part.toolName, part.input);
+      } else if (part.type === "tool-result") {
+        const out = typeof part.output === "string" ? part.output : JSON.stringify(part.output);
+        opts.onToolResult?.(part.toolName, out.slice(0, 500));
+      } else if (part.type === "error") {
+        throw part.error;
+      }
+    }
   } catch (e: any) {
     if (e.name === "AbortError") throw new AgentError(`[${cfg.id}] timeout after ${(opts.timeoutMs ?? 60000) / 1000}s — is ${cfg.baseURL ?? cfg.provider} reachable?`, "TIMEOUT");
     const msg = e.message ?? String(e);
@@ -56,6 +72,13 @@ export async function* runAgent(prompt: string, opts: AgentOpts = {}, onUsage?: 
     throw new AgentError(`[${cfg.id}] ${msg}`, e.code);
   } finally {
     clearTimeout(timeout);
+  }
+  if (!sawText) {
+    try {
+      const steps: any[] = await result.steps;
+      const last = steps?.[steps.length - 1];
+      if (last?.toolCalls?.length) yield `\n[tools used: ${last.toolCalls.map((t: any) => t.toolName).join(", ")}]\n`;
+    } catch {}
   }
   try {
     const usage: any = await (result as any).usage;
