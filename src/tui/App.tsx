@@ -4,6 +4,7 @@ import { runAgent, testConnection, type ToolDecision } from "../core/agent.js";
 import { loadConfig, saveConfig } from "../core/config.js";
 import { countLOC, detectEnvs, formatDuration, estimateTokens } from "../utils/stats.js";
 import { setEnvKey, maskKey } from "../utils/env.js";
+import { listOllamaModels, ollamaIdSuggestion } from "../utils/ollama.js";
 
 export function App({ initialPrompt, initialModel }: { initialPrompt?: string; initialModel?: string }) {
   const { exit } = useApp();
@@ -18,6 +19,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
   const draftRef = useRef("");
   const [busy, setBusy] = useState(false);
   const [pendingTool, setPendingTool] = useState<{ name: string; args: any } | null>(null);
+  const [wizard, setWizard] = useState<null | { step: "kind" | "model" | "id"; kind?: "local" | "cloud"; models?: string[]; model?: string }>(null);
   const approvalRef = useRef<((d: ToolDecision) => void) | null>(null);
   const alwaysRef = useRef<Set<string>>(new Set());
   const [tokenStats, setTokenStats] = useState<Record<string, { sent: number; recv: number }>>({});
@@ -239,7 +241,8 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       }
       if (sub === "add") {
         const [id, provider, model, baseURL] = args.slice(1);
-        if (!id || !provider || !model) { pushSystem("Usage: :models add <id> <provider> <model> [baseURL]"); return true; }
+        if (!id && !provider) { setWizard({ step: "kind" }); pushSystem("DODAWANIE MODELU — kreator. Wybierz rodzaj:"); return true; }
+        if (!id || !provider || !model) { pushSystem("Usage: :models add <id> <provider> <model> [baseURL]  |  :models add — kreator interaktywny"); return true; }
         if (!["anthropic", "openai", "openrouter", "ollama"].includes(provider)) { pushSystem(`Invalid provider "${provider}"`); return true; }
         if (cur.models.find((m) => m.id === id)) { pushSystem(`Model "${id}" already exists`); return true; }
         const apiKeyEnv = provider === "anthropic" ? "ANTHROPIC_API_KEY" : provider === "openai" ? "OPENAI_API_KEY" : provider === "openrouter" ? "OPENROUTER_API_KEY" : undefined;
@@ -284,6 +287,59 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
     pushSystem(`Unknown command ":${c}". Try :help`); return true;
   };
 
+  const wizardPrompt = (w: NonNullable<typeof wizard>): string => {
+    if (w.step === "kind") return "DODAWANIE MODELU — 1: Ollama lokalny (localhost:11434), 2: Ollama Cloud (ollama.com)";
+    if (w.step === "model") return `Wybierz model — numer z listy lub wpisz nazwę ręcznie (${w.models?.length ?? 0} znalezionych, "n" = własna nazwa)`;
+    return `ID konfiguracji dla ${w.model} (Enter = "${ollamaIdSuggestion(w.model ?? "")}")`;
+  };
+
+  const handleWizard = async (value: string) => {
+    const w = wizard!;
+    const v = value.trim();
+    if (v === ":q" || v === ":exit") { setWizard(null); pushSystem("Wizard przerwany."); return; }
+    if (w.step === "kind") {
+      if (v !== "1" && v !== "2") { pushSystem("Wpisz 1 (lokalny) lub 2 (cloud)."); return; }
+      const kind = v === "1" ? "local" as const : "cloud" as const;
+      setWizard({ ...w, step: "model", kind, models: [] });
+      try {
+        const models = (await listOllamaModels(kind)).map((m) => m.name);
+        setWizard({ step: "model", kind, models });
+        pushSystem(`Ollama ${kind === "local" ? "lokalny" : "cloud"} — dostępne modele:\n${models.map((m, i) => `${String(i + 1).padStart(2)}. ${m}`).join("\n")}\n\nWpisz numer, nazwę modelu lub "n" (własna).`);
+      } catch (e: any) {
+        setWizard(null);
+        pushError(`Nie udało się pobrać listy (${kind === "local" ? "czy `ollama serve` działa?" : e.message})`);
+      }
+      return;
+    }
+    if (w.step === "model") {
+      let model: string | undefined;
+      if (/^\d+$/.test(v)) model = w.models?.[parseInt(v, 10) - 1];
+      else if (v.toLowerCase() === "n") { pushSystem('Wpisz pełną nazwę modelu (np. "qwen3-coder:480b").'); return; }
+      else model = v;
+      if (!model) { pushSystem(`Nie ma takiego numeru (1-${w.models?.length ?? 0}).`); return; }
+      setWizard({ ...w, step: "id", model });
+      return;
+    }
+    if (w.step === "id") {
+      const id = v || ollamaIdSuggestion(w.model ?? "");
+      const cur = reloadCfg();
+      if (cur.models.find((m) => m.id === id)) { pushSystem(`ID "${id}" już istnieje — podaj inne.`); return; }
+      const isCloud = w.kind === "cloud";
+      cur.models.push({
+        id,
+        provider: "ollama",
+        model: w.model!,
+        ...(isCloud ? { apiKeyEnv: "OLLAMA_API_KEY", baseURL: "https://ollama.com/v1" } : {}),
+      });
+      saveConfig(cur); reloadCfg();
+      setWizard(null);
+      pushSystem(
+        `✓ Dodano ${id} → ${w.model}${isCloud ? " (Ollama Cloud, https://ollama.com/v1)" : " (lokalny)"}\n${isCloud && !process.env.OLLAMA_API_KEY ? `⚠ Ustaw klucz: :models key ${id} <OLLAMA_API_KEY> (z ollama.com/settings/keys)\n` : ""}Teraz: :models test ${id}${isCloud ? "" : "\nJeśli model nie jest pobrany: ollama pull " + w.model}`
+      );
+      return;
+    }
+  };
+
   useInput(async (char, key) => {
     if (approvalRef.current) {
       const c = char?.toLowerCase();
@@ -300,6 +356,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       if (input.startsWith(":") && sug) { setInput((s) => s + sug); return; }
       cycleModel(key.shift ? -1 : 1); return;
     }
+    if (key.return && wizard && input.trim()) { const v = input; setInput(""); handleWizard(v); return; }
     if (key.return && !busy && input.trim()) {
       let prompt = input; setInput(""); setHistIdx(-1); draftRef.current = "";
       if (prompt.startsWith(":")) {
@@ -407,10 +464,11 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
 
       <Box flexShrink={0} borderStyle="round" borderColor={isCmd ? "yellow" : lastErr ? "red" : "magenta"} marginTop={1} paddingX={1} flexDirection="column">
         <Box flexDirection="row" flexWrap="wrap" width={innerW}>
-          <Text color={isCmd ? "yellow" : "magenta"} bold>{isCmd ? ":" : "›"} </Text>
-          <Text color={busy ? "gray" : isCmd ? "yellow" : "yellow"} wrap="wrap">{busy ? (pendingTool ? "" : "(zajęty…)") : isCmd ? input.slice(1) : input}{suggestion && !busy ? <Text dimColor>{suggestion}</Text> : null}</Text>
-          <Text backgroundColor={busy ? undefined : isCmd ? "yellow" : "white"} color={isCmd ? "black" : "white"}> </Text>
+          <Text color={wizard ? "cyan" : isCmd ? "yellow" : "magenta"} bold>{wizard ? "⚙" : isCmd ? ":" : "›"} </Text>
+          <Text color={wizard ? "cyan" : busy ? "gray" : isCmd ? "yellow" : "yellow"} wrap="wrap">{wizard ? wizardPrompt(wizard) : busy ? (pendingTool ? "" : "(zajęty…)") : isCmd ? input.slice(1) : input}{suggestion && !busy && !wizard ? <Text dimColor>{suggestion}</Text> : null}</Text>
+          {!wizard && <Text backgroundColor={busy ? undefined : isCmd ? "yellow" : "white"} color={isCmd ? "black" : "white"}> </Text>}
         </Box>
+        {wizard && <Text dimColor wrap="wrap">→ {input || "(wpisz odpowiedź)"} ▌   (:q przerywa)</Text>}
         {pendingTool && (
           <Box flexDirection="column">
             <Text color="cyan" bold>⚡ Tool: {pendingTool.name}</Text>

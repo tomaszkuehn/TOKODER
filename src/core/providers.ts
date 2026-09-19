@@ -47,8 +47,9 @@ export function getModelFromConfig(cfg: ModelConfig): LanguageModel {
       return client(cfg.model);
     }
     case "ollama": {
+      const key = cfg.apiKeyEnv ? requireKey(cfg) : "ollama";
       const client = createOpenAI({
-        apiKey: "ollama",
+        apiKey: key,
         baseURL: cfg.baseURL ?? "http://localhost:11434/v1",
       });
       return client(cfg.model);
