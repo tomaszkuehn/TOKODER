@@ -1,18 +1,6 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 
-function parseEnv(content: string): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const line of content.split("\n")) {
-    const t = line.trim();
-    if (!t || t.startsWith("#")) continue;
-    const idx = t.indexOf("=");
-    if (idx === -1) continue;
-    out[t.slice(0, idx).trim()] = t.slice(idx + 1).trim();
-  }
-  return out;
-}
-
 export function getEnvPath(cwd = process.cwd()): string {
   return resolve(cwd, ".env");
 }

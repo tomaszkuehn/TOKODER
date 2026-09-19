@@ -1,7 +1,7 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { z } from "zod";
-import { checkAccess, accessRequest } from "../utils/permissions.js";
+import { checkAccess, accessRequest, getProjectRoot } from "../utils/permissions.js";
 
 const execAsync = promisify(exec);
 
@@ -32,6 +32,9 @@ export async function bashTool({ command, workdir, timeout }: z.infer<typeof bas
   const timeoutMs = timeout && timeout > 0 ? timeout * 1000 : 30000;
   const msCap = 600000;
   const eff = Math.min(timeoutMs, msCap);
+  if (/(^|[\s"'`(=;|&\\/])\.\.([\s"'`=;|&\\/]|$)/.test(command)) {
+    return `Error: command contains ".." path traversal — sandbox forbids leaving the project directory. Use paths inside ${getProjectRoot()} instead.`;
+  }
   if (workdir) {
     const chk = checkAccess(workdir, "execute");
     if (!chk.ok) return chk.reason === "system"

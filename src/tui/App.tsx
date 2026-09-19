@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef, useMemo } from "react";
 import { Box, Text, useInput, useApp, useStdout } from "ink";
+import { writeSync } from "node:fs";
 import { runAgent, testConnection, type ToolDecision, type AccessDecision } from "../core/agent.js";
 import { loadConfig, saveConfig, normalizeCompact, compactLimit, globalConfigPath, localConfigPath, DEFAULT_CONTEXT_WINDOW } from "../core/config.js";
 import { compactHistory, estimateHistoryTokens, COMPACT_MODES, type CompactMode } from "../core/compact.js";
@@ -111,7 +112,6 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
       const msgs = transcriptRef.current;
       stdout.write("\x1b[?1049l\x1b[?25h");
       if (msgs.length) {
-        const { writeSync } = require("node:fs");
         try {
           let out = "\n— tocoder transcript —\n";
           for (const m of msgs) {
@@ -663,6 +663,7 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
               if (/(^|[\s"'`(=;|&])\/[A-Za-z]/.test(cmd)) return false;
               if (/\b[A-Za-z]:[\\\/]/.test(cmd)) return false;
               if (/(~|\$HOME|%USERPROFILE%|\$env:USERPROFILE|\$env\.HOME|\\\\)/i.test(cmd)) return false;
+              if (/(^|[\s"'`(=;|&\\/])\.\.([\s"'`=;|&\\/]|$)/.test(cmd)) return false;
               return true;
             }
             if (name === "grep" || name === "glob") return checkAccess(a?.path ?? a?.cwd ?? ".", "read").ok;
