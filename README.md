@@ -4,16 +4,19 @@ AI coding agent for the terminal — clone of [opencode](https://github.com/anom
 
 ## Features
 
-- **Agent loop** with tool calling (`read`, `write`, `edit`, `bash`, `glob`, `grep`) — `maxSteps: 20`
+- **Agent loop** with tool calling (`read`, `write`, `edit`, `bash`, `glob`, `grep`) — `maxSteps: 20`, 60s timeout, typed errors
 - **Multi-model** — 3+ models simultaneously via `tokoder.config.json` (Anthropic / OpenAI / OpenRouter / Ollama)
-- **3-panel TUI**: command input, AI response, status bar (tokens, model, LOC, session time, envs)
+- **3-panel TUI** — fixed header/status/input, scrollable AI output (`PgUp`/`PgDn`/`↑`/`↓`), takes over terminal via alt buffer but dumps transcript on exit (`TOCODER_ALT_SCREEN=0` disables)
+- **Vim-style commands** — `:exit` `:compact` `:models` with ghost autocomplete (`Tab`/`Enter` completes)
 - **CLI** — `tocoder` (also `tokoder` alias), `models`, `--all` parallel compare, `--no-tui`
+- **Diagnostics** — `:models test <id>` checks `OLLAMA` `/api/tags` / `/v1/models`, shows `ECONNREFUSED`/`401`/`404` instead of silent hang
 - **WSL + Android Studio** aware — env detection in status bar
 
 ## Requirements
 
 - Node.js 18+ (tested 24.21.0)
 - WSL available on Windows (optional)
+- Ollama (optional, for local models)
 
 ## Install
 
@@ -41,13 +44,22 @@ OPENROUTER_API_KEY=sk-or-...
     { "id": "claude-sonnet", "provider": "anthropic", "model": "claude-sonnet-4-20250514", "apiKeyEnv": "ANTHROPIC_API_KEY" },
     { "id": "gpt-4o", "provider": "openai", "model": "gpt-4o", "apiKeyEnv": "OPENAI_API_KEY" },
     { "id": "gemini-flash", "provider": "openrouter", "model": "google/gemini-2.0-flash-001", "apiKeyEnv": "OPENROUTER_API_KEY", "baseURL": "https://openrouter.ai/api/v1" },
-    { "id": "ollama-local", "provider": "ollama", "model": "llama3", "baseURL": "http://localhost:11434/v1" }
+    { "id": "qwen-local", "provider": "ollama", "model": "qwen3:8b", "baseURL": "http://localhost:11434/v1" }
   ],
   "defaultModel": "claude-sonnet"
 }
 ```
 
 Providers: `anthropic` | `openai` | `openrouter` | `ollama`. `baseURL` enables any OpenAI-compatible endpoint.
+
+Local Qwen example:
+```bash
+ollama pull qwen3:8b
+# inside tocoder
+:models add qwen-local ollama qwen3:8b
+:models test qwen-local
+:models default qwen-local
+```
 
 ## Usage
 
@@ -57,17 +69,38 @@ tocoder -m gpt-4o "fix tests"    # TUI with prompt + model
 tocoder --no-tui "explain src/"  # plain stdout
 tocoder --all "compare answers"  # run all 3 models in parallel
 tocoder models                   # list configured models
+TOCODER_ALT_SCREEN=0 tocoder     # stay in buffer without alt screen
 
 # inside TUI:
 # Tab / Shift+Tab  cycle model
+# :e + Tab/Enter   autocomplete vim commands
+# PgUp/PgDn, ↑/↓   scroll output
 # Enter            send
-# Esc / Ctrl+C     exit
+# Esc / Ctrl+C     exit (transcript stays in scrollback)
 
 # scripts (Windows / WSL)
 powershell -ExecutionPolicy Bypass -File scripts/tocoder.ps1 "prompt" -Model gpt-4o -All -NoTui
 bash scripts/tocoder.sh --model gemini-flash "prompt"
 scripts/tocoder.bat "prompt"
 ```
+
+### Vim commands
+
+| Command | Action |
+|---------|--------|
+| `:exit`, `:q`, `:quit` | exit (transcript dumped) |
+| `:compact` | keep last 2 messages, reset tokens |
+| `:models` | list models |
+| `:models <id>` | switch model |
+| `:models add <id> <provider> <model> [baseURL]` | add model to `tokoder.config.json` |
+| `:models rm <id>` | remove |
+| `:models default <id>` | set default |
+| `:models key <id> <API_KEY>` | save to `.env` |
+| `:models test [id]` | diagnose connection (`/api/tags`) |
+| `:models set <id> <field> <value>` | edit field |
+| `:help` | help |
+
+Typing `:` shows ghost hint when prefix is unambiguous — `Enter` executes, `Tab` completes (e.g. `:comp` → `:compact`).
 
 ## TUI Layout
 
@@ -77,31 +110,48 @@ scripts/tocoder.bat "prompt"
 ├─ STATUS ──────────────────────────────────┤
 │ Model: claude-sonnet (...) │ ↑ 1234 ↓ 567 │
 │ LOC: 2,069 │ Time: 00:05:23 │ Env: ✓WSL ✓Android ✓Node │
-├─ AI RESPONSE ─────────────────────────────┤
+├─ AI RESPONSE (scrollable, PgUp/PgDn) ─────┤
 │ ● AI: ...                                 │
 ├─ INPUT ───────────────────────────────────┤
-│ › your command ▌                          │
+│ › your command ▌  (or :exit with hint)    │
 └───────────────────────────────────────────┘
 ```
 
-- **LOC**: counted from `src/utils/stats.ts` (ignores `node_modules`, `dist`, `.git`)
-- **Tokens**: from AI SDK `usage` + `len/4` fallback
-- **Envs**: WSL (`WSL_DISTRO_NAME` / `/proc/version`), Android (`ANDROID_HOME` / `adb`), Node
+- **Header/Status/Input**: `flexShrink: 0` — never shrink
+- **Output**: `flexGrow: 1` + `overflow: hidden` + `height = rows - chrome`, sliced to fit; `scroll` offset
+- **LOC**: `src/utils/stats.ts` (ignores `node_modules`, `dist`, `.git`)
+- **Tokens**: AI SDK `usage` + `len/4` fallback
+- **Envs**: WSL / Android / Node
+- **Alt buffer**: `\x1b[?1049h/l`, dumps transcript on exit
+
+## Troubleshooting — Local model no response
+
+Empty response with no error is now fixed — errors are shown in red `STATUS` and `✗ ERR:`.
+
+```bash
+:models test qwen-local   # check Ollama reachable + model exists
+ollama list                # if model missing: ollama pull qwen3:8b
+ollama serve               # if ECONNREFUSED
+```
+
+Common: `404 model not found` → wrong `model` name; `ECONNREFUSED` → Ollama not running; `401` → wrong `apiKeyEnv`.
 
 ## Project Structure
 
 ```
 src/
-  cli.ts              # commander CLI (tocoder)
+  cli.ts              # commander CLI (tocoder), dotenv
   core/
-    agent.ts          # streamText loop
-    config.ts         # load tokoder.config.json
+    agent.ts          # streamText loop, timeout, AgentError, testConnection
+    config.ts         # load/save tokoder.config.json
     providers.ts      # getModelFromConfig
   tools/              # read / write / edit / bash / glob / grep
-  tui/App.tsx         # Ink 3-panel UI
-  utils/stats.ts      # LOC + env + duration
+  tui/App.tsx         # Ink 3-panel UI, vim cmds, autocomplete, scroll, alt buffer
+  utils/
+    stats.ts          # LOC + env + duration
+    env.ts            # .env set/mask
 scripts/
-  tocoder.ps1 / .sh / .bat
+  tocoder.ps1 / .sh / .bat (and tokoder aliases)
 tokoder.config.json
 ```
 
