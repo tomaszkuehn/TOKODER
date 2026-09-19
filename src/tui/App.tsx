@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef, useMemo } from "react";
 import { Box, Text, useInput, useApp, useStdout } from "ink";
 import { runAgent, testConnection, type ToolDecision, type AccessDecision } from "../core/agent.js";
-import { loadConfig, saveConfig, normalizeCompact, DEFAULT_CONTEXT_WINDOW } from "../core/config.js";
+import { loadConfig, saveConfig, normalizeCompact, globalConfigPath, localConfigPath, DEFAULT_CONTEXT_WINDOW } from "../core/config.js";
 import { compactHistory, estimateHistoryTokens, COMPACT_MODES, type CompactMode } from "../core/compact.js";
 import { countLOC, detectEnvs, formatDuration, estimateTokens } from "../utils/stats.js";
 import { setEnvKey, maskKey } from "../utils/env.js";
@@ -246,9 +246,10 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
         const hasKey = key ? maskKey(key) : "— no key";
         const active = m.id === modelId ? "●" : "○";
         const def = m.id === c.defaultModel ? " [default]" : "";
-        return `${active} ${m.id.padEnd(16)} ${m.provider.padEnd(10)} ${m.model}  key:${hasKey} ${m.baseURL ?? ""}${def}`;
+        const src = m.source === "local" ? " [local]" : " [global]";
+        return `${active} ${m.id.padEnd(16)} ${m.provider.padEnd(10)} ${m.model}  key:${hasKey} ${m.baseURL ?? ""}${src}${def}`;
       })
-      .join("\n");
+      .join("\n") + `\n\nGlobal: ${globalConfigPath()}\nLocal: ${localConfigPath() ?? "— none in project"} (local overrides global by model id)`;
 
   const handleCommand = async (raw: string): Promise<boolean> => {
     if (!raw.startsWith(":")) return false;
@@ -279,7 +280,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       if (!COMPACT_MODES.includes(mapped as CompactMode)) { pushSystem(`Unknown mode "${m}". Available: ${COMPACT_MODES.join(", ")}`); return true; }
       cur.compact = { ...cc, mode: mapped as CompactMode };
       saveConfig(cur); reloadCfg();
-      pushSystem(`✓ Compact mode: ${mapped}`);
+      pushSystem(`✓ Compact mode: ${mapped} (saved to ${localConfigPath() ?? globalConfigPath()})`);
       return true;
     }
     if (c === "compact-auto" || c === "compactauto") {
@@ -300,7 +301,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       } else { pushSystem("Usage: :compact-auto <on|off|percent>"); return true; }
       saveConfig(cur); reloadCfg();
       const nc = normalizeCompact(reloadCfg().compact);
-      pushSystem(`✓ Auto-compact: ${nc.autoTrigger ? `ON @ ${nc.thresholdPercent}%` : "OFF"}`);
+      pushSystem(`✓ Auto-compact: ${nc.autoTrigger ? `ON @ ${nc.thresholdPercent}%` : "OFF"} (saved to ${localConfigPath() ?? globalConfigPath()})`);
       return true;
     }
     if (["compact", "clear", "compress"].includes(c)) {
@@ -310,7 +311,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
     if (["models", "model", "providers"].includes(c)) {
       const sub = args[0]?.toLowerCase();
       const cur = reloadCfg();
-      if (!sub) { pushSystem(`MODELS (${cur.models.length}):\n${formatModels(cur)}\n\n:models <id> — switch\n:models add <id> <provider> <model> [baseURL]\n:models rm <id>\n:models default <id>\n:models key <id> <API_KEY>\n:models test <id>\n:models set <id> <field> <value>`); return true; }
+      if (!sub) { pushSystem(`MODELS (${cur.models.length}):\n${formatModels(cur)}\n\n:models <id> — switch\n:models add <id> <provider> <model> [baseURL]\n:models rm <id>\n:models default <id>\n:models key <id> <API_KEY>\n:models test <id>\n:models set <id> <field> <value>\n:models save <global|local> — copy merged config`); return true; }
       if (sub === "test") {
         const id = args[1] ?? modelId;
         const m = cur.models.find((x) => x.id === id);
@@ -332,7 +333,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
         if (cur.models.find((m) => m.id === id)) { pushSystem(`Model "${id}" already exists`); return true; }
         const apiKeyEnv = provider === "anthropic" ? "ANTHROPIC_API_KEY" : provider === "openai" ? "OPENAI_API_KEY" : provider === "openrouter" ? "OPENROUTER_API_KEY" : undefined;
         cur.models.push({ id, provider: provider as any, model, apiKeyEnv, baseURL });
-        saveConfig(cur); reloadCfg(); pushSystem(`Added ${id}. Now: :models key ${id} <API_KEY>  and  :models test ${id}`); return true;
+        const savedTo = saveConfig(cur); reloadCfg(); pushSystem(`Added ${id} (saved to ${savedTo}). Now: :models key ${id} <API_KEY>  and  :models test ${id}`); return true;
       }
       if (["rm", "remove", "del"].includes(sub)) {
         const id = args[1];
@@ -344,7 +345,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       if (sub === "default") {
         const id = args[1];
         if (!id || !cur.models.find((m) => m.id === id)) { pushSystem(`Usage: :models default <id> — available: ${cur.models.map((m) => m.id).join(", ")}`); return true; }
-        cur.defaultModel = id; saveConfig(cur); reloadCfg(); pushSystem(`Default set to ${id}`); return true;
+        cur.defaultModel = id; saveConfig(cur); reloadCfg(); pushSystem(`Default set to ${id} (saved to ${saveConfig(reloadCfg())})`); return true;
       }
       if (sub === "key") {
         const id = args[1]; const key = args.slice(2).join(" ");
@@ -355,6 +356,13 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
         if (!m.apiKeyEnv) { m.apiKeyEnv = envKey; saveConfig(cur); }
         setEnvKey(envKey, key.trim()); reloadCfg(); pushSystem(`Key saved for ${id} → ${envKey} (${maskKey(key)}) in .env — run :models test ${id}`); return true;
       }
+      if (sub === "save") {
+        const scope = args[1]?.toLowerCase() === "global" ? "global" : args[1]?.toLowerCase() === "local" ? "local" : undefined;
+        if (!scope) { pushSystem("Usage: :models save <global|local> — copies the current merged config"); return true; }
+        const savedTo = saveConfig(reloadCfg(), process.cwd(), scope);
+        pushSystem(`✓ Config saved (${scope}): ${savedTo}`);
+        return true;
+      }
       if (sub === "set") {
         const [id, field, ...rest] = args.slice(1);
         const value = rest.join(" ");
@@ -362,7 +370,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
         const m = cur.models.find((x) => x.id === id);
         if (!m) { pushSystem(`Not found: ${id}`); return true; }
         if (field === "provider" && !["anthropic", "openai", "openrouter", "ollama"].includes(value)) { pushSystem(`Invalid provider`); return true; }
-        (m as any)[field] = value; saveConfig(cur); reloadCfg(); pushSystem(`Updated ${id} ${field}=${value}`); return true;
+        (m as any)[field] = value; const savedTo = saveConfig(cur); reloadCfg(); pushSystem(`Updated ${id} ${field}=${value} (saved to ${savedTo})`); return true;
       }
       pushSystem(`Unknown subcommand "${sub}". Try :models`); return true;
     }
@@ -513,10 +521,10 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       if (idx === -1) { setWizard(null); pushSystem(`Not found: ${w.rmId}`); return; }
       const removed = cur.models.splice(idx, 1)[0];
       if (cur.defaultModel === removed.id) cur.defaultModel = cur.models[0]?.id ?? "";
-      saveConfig(cur); reloadCfg();
+      const savedTo = saveConfig(cur); reloadCfg();
       if (modelId === removed.id) setModelId(cur.defaultModel);
       setWizard(null);
-      pushSystem(`✓ Removed ${removed.id} (${removed.provider}/${removed.model})${cur.defaultModel ? `\nDefault: ${cur.defaultModel}` : "\n⚠ No models left in config!"}`);
+      pushSystem(`✓ Removed ${removed.id} (${removed.provider}/${removed.model}) (saved to ${savedTo})${cur.defaultModel ? `\nDefault: ${cur.defaultModel}` : "\n⚠ No models left in config!"}`);
       return;
     }
     if (w.step === "id") {
@@ -530,10 +538,10 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
         model: w.model!,
         ...(isCloud ? { apiKeyEnv: "OLLAMA_API_KEY", baseURL: "https://ollama.com/v1" } : {}),
       });
-      saveConfig(cur); reloadCfg();
+      const savedTo = saveConfig(cur); reloadCfg();
       setWizard(null);
       pushSystem(
-        `✓ Added ${id} → ${w.model}${isCloud ? " (Ollama Cloud, https://ollama.com/v1)" : " (local)"}\n${isCloud && !process.env.OLLAMA_API_KEY ? `⚠ Set the key: :models key ${id} <OLLAMA_API_KEY> (from ollama.com/settings/keys)\n` : ""}Now: :models test ${id}${isCloud ? "" : "\nIf the model is not pulled yet: ollama pull " + w.model}`
+        `✓ Added ${id} → ${w.model} (saved to ${savedTo})${isCloud ? " (Ollama Cloud, https://ollama.com/v1)" : " (local)"}\n${isCloud && !process.env.OLLAMA_API_KEY ? `⚠ Set the key: :models key ${id} <OLLAMA_API_KEY> (from ollama.com/settings/keys)\n` : ""}Now: :models test ${id}${isCloud ? "" : "\nIf the model is not pulled yet: ollama pull " + w.model}`
       );
       return;
     }

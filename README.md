@@ -43,7 +43,14 @@ OPENAI_API_KEY=sk-...
 OPENROUTER_API_KEY=sk-or-...
 ```
 
-### Models — `tokoder.config.json` (or `~/.config/tokoder/config.json`)
+### Models — global + project-local
+
+Config loads from **two places** and merges:
+
+1. **Global** — `~/.config/tokoder/config.json` (shared model roster; `tocoder` runs anywhere)
+2. **Project-local** — `tokoder.config.json` in the folder (project overrides)
+
+Local models override global entries with the same id and can add new ones; local also wins for `defaultModel` and `compact`. Writes go to the local file when one exists in the project, otherwise to the global file — `:models save global|local` copies the merged config explicitly.
 
 ```json
 {
@@ -118,6 +125,7 @@ scripts/tocoder.bat "prompt"
 | `:models default <id>` | set default |
 | `:models key <id> <API_KEY>` | save to `.env` |
 | `:models test [id]` | diagnose connection (`/api/tags`) |
+| `:models save <global\|local>` | copy the merged config to the chosen file |
 | `:models set <id> <field> <value>` | edit field |
 | `:acl` | show access rules + path to rules file |
 | `:acl set <read\|write\|execute> <yes\|no>` | toggle global outside-access default |
@@ -129,7 +137,7 @@ Typing `:` shows ghost hint when prefix is unambiguous — `Enter` executes, `Ta
 
 ## Project Instructions (AGENTS.md)
 
-A file appended to the system prompt with **every** model call — keeps answers terse (output-token savings) and documents available tools/conventions.
+A file appended to the system prompt with **every** model call — always project-local (`AGENTS.md` in the folder), keeps answers terse (output-token savings) and documents available tools/conventions.
 
 ```bash
 :agents init    # create AGENTS.md with defaults

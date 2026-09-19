@@ -1,5 +1,5 @@
-import { readFileSync, existsSync, writeFileSync } from "node:fs";
-import { resolve, join } from "node:path";
+import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
+import { resolve, join, dirname } from "node:path";
 
 export type ModelConfig = {
   id: string;
@@ -8,6 +8,8 @@ export type ModelConfig = {
   apiKeyEnv?: string;
   baseURL?: string;
   contextWindow?: number;
+  /** where the model was loaded from — set by loadConfig, stripped on save */
+  source?: "global" | "local";
 };
 
 export type CompactMode = "reduce" | "balance" | "value";
@@ -50,40 +52,64 @@ const DEFAULTS: TokoderConfig = {
 
 const CANDIDATES = ["tokoder.config.json", ".tokoder.json", "tokoder.config.jsonc"];
 
-function configPath(cwd = process.cwd()): string {
+export function globalConfigPath(): string {
+  const home = process.env.USERPROFILE ?? process.env.HOME ?? ".";
+  return join(home, ".config", "tokoder", "config.json");
+}
+
+export function localConfigPath(cwd = process.cwd()): string | null {
   for (const name of CANDIDATES) {
     const p = resolve(cwd, name);
     if (existsSync(p)) return p;
   }
-  return resolve(cwd, "tokoder.config.json");
+  return null;
 }
 
+function readJson(p: string): any | null {
+  try {
+    return JSON.parse(readFileSync(p, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Models config = GLOBAL (~/.config/tokoder/config.json) + LOCAL (tokoder.config.json in cwd).
+ * Merge: global first, local models override same-id entries and append new ones;
+ * local wins for defaultModel and compact when declared.
+ * Instructions stay project-local (AGENTS.md).
+ */
 export function loadConfig(cwd = process.cwd()): TokoderConfig {
-  for (const name of CANDIDATES) {
-    const p = resolve(cwd, name);
-    if (existsSync(p)) {
-      try {
-        const raw = readFileSync(p, "utf-8");
-        const parsed = JSON.parse(raw) as TokoderConfig;
-        if (parsed.models?.length) return { ...DEFAULTS, ...parsed, models: parsed.models };
-      } catch {}
+  const g = readJson(globalConfigPath()) as TokoderConfig | null;
+  const lp = localConfigPath(cwd);
+  const l = lp ? (readJson(lp) as TokoderConfig | null) : null;
+
+  const gModels: ModelConfig[] = g?.models?.length ? g.models.map((m) => ({ ...m, source: "global" as const })) : [];
+  let models: ModelConfig[];
+  if (!gModels.length && !l) {
+    models = DEFAULTS.models.map((m) => ({ ...m, source: "global" as const }));
+  } else {
+    models = [...gModels];
+    for (const m of l?.models ?? []) {
+      const i = models.findIndex((x) => x.id === m.id);
+      if (i !== -1) models[i] = { ...m, source: "local" as const };
+      else models.push({ ...m, source: "local" as const });
     }
   }
-  const home = process.env.USERPROFILE ?? process.env.HOME;
-  if (home) {
-    const p = join(home, ".config", "tokoder", "config.json");
-    if (existsSync(p)) {
-      try {
-        return JSON.parse(readFileSync(p, "utf-8")) as TokoderConfig;
-      } catch {}
-    }
-  }
-  return DEFAULTS;
+  const defaultModel =
+    l?.defaultModel ?? g?.defaultModel ?? (models.find((m) => m.id === DEFAULTS.defaultModel)?.id ?? models[0]?.id ?? DEFAULTS.defaultModel);
+  const compact = { ...(g?.compact ?? {}), ...(l?.compact ?? {}) };
+  return { models, defaultModel: models.find((m) => m.id === defaultModel) ? defaultModel : models[0]?.id ?? defaultModel, compact };
 }
 
-export function saveConfig(cfg: TokoderConfig, cwd = process.cwd()): void {
-  const p = configPath(cwd);
-  writeFileSync(p, JSON.stringify(cfg, null, 2) + "\n", "utf-8");
+export function saveConfig(cfg: TokoderConfig, cwd = process.cwd(), scope?: "global" | "local"): string {
+  const lp = localConfigPath(cwd);
+  const s = scope ?? (lp ? "local" : "global");
+  const p = s === "global" ? globalConfigPath() : lp ?? resolve(cwd, "tokoder.config.json");
+  if (s === "global") mkdirSync(dirname(p), { recursive: true });
+  const clean = { ...cfg, models: cfg.models.map((m) => { const { source: _src, ...rest } = m; return rest; }) };
+  writeFileSync(p, JSON.stringify(clean, null, 2) + "\n", "utf-8");
+  return p;
 }
 
 export function getModelConfig(id: string, cfg = loadConfig()): ModelConfig | undefined {
