@@ -1,6 +1,6 @@
 import { streamText, stepCountIs } from "ai";
 import { getModelFromConfig, resolveModel, listModels } from "./providers.js";
-import { agentTools, executors } from "../tools/index.js";
+import { agentTools, executors, agentToolNames } from "../tools/index.js";
 import { logEntry } from "../utils/logger.js";
 import { ACL_MARK } from "../utils/permissions.js";
 import { buildSystemPrompt } from "./instructions.js";
@@ -24,6 +24,8 @@ export type AgentOpts = {
   cwd?: string;
   timeoutMs?: number;
   maxSteps?: number;
+  /** read-only plan mode: no write/edit tools, no mutating bash, plan-only system prompt */
+  planMode?: boolean;
   onToolApproval?: (name: string, args: any) => Promise<ToolDecision>;
   onAccessRequest?: (tool: string, args: any, mode: "read" | "write" | "execute", target: string) => Promise<AccessDecision>;
   abortSignal?: AbortSignal;
@@ -62,6 +64,30 @@ export class AgentError extends Error {
   }
 }
 
+/** PLAN MODE note appended to the system prompt when opts.planMode */
+const PLAN_NOTE = `\n\n# PLAN MODE (read-only)\nYou are in PLAN MODE. You MUST NOT modify anything:
+- write/edit tools are unavailable; bash may NOT create/modify/delete files, install, git-commit, or redirect output (>) into files.
+- Only read/glob/grep/inspect bash (e.g. type, git log, git diff, npm test without fixes) is allowed.
+- End your turn with a concrete PLAN: numbered steps, files to touch, and how to verify. The user will approve it before any change is made.`;
+
+/** bash subcommands that mutate things — denied in plan mode */
+const PLAN_BASH_DENY: RegExp[] = [
+  /(^|[\s"'`(=;&|])(npm|pnpm|yarn|pip|cargo|dotnet|apt|choco|winget|scoop)\s+(install|add|remove|uninstall|update|upgrade|publish)\b/i,
+  /(^|[\s"'`(=;&|])(rm|del|rmdir|Remove-Item|rmdir|mv|Move-Item|git\s+(add|commit|push|reset|checkout|restore|clean|merge|rebase)|touch|New-Item|Set-Content|Out-File|Copy-Item)\b/i,
+];
+
+function screenPlanBash(command: string): string | null {
+  const c = String(command);
+  if (/(^|[^\s>])>{1,2}\s*[\w./~\\-]/.test(c) || /(^|\s)\|\s*(Out-File|Set-Content|Add-Content|Tee-Object)\b/i.test(c)) return "redirection into file";
+  if (PLAN_BASH_DENY.some((r) => r.test(c))) return "mutating command";
+  return null;
+}
+
+/** tool names visible to the model in plan mode (read-only) */
+const planToolNames = agentToolNames.filter((n) => n !== "write" && n !== "edit");
+/** tools object actually passed to streamText per mode */
+const planTools = Object.fromEntries(Object.entries(agentTools).filter(([n]) => planToolNames.includes(n)));
+
 export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { role: "user" | "assistant"; content: string }[] } = {}, onUsage?: (u: Usage) => void) {
   const cfg = opts.modelConfig ?? resolveModel(opts.modelId);
   const mdl = getModelFromConfig(cfg);
@@ -97,9 +123,9 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
       try {
         result = streamText({
           model: mdl,
-          system: buildSystemPrompt(SYSTEM, opts.cwd ?? process.cwd()),
+          system: buildSystemPrompt(SYSTEM + (opts.planMode ? PLAN_NOTE : ""), opts.cwd ?? process.cwd()),
           messages: msgs,
-          tools: agentTools,
+          tools: planTools,
           stopWhen: stepCountIs(1),
           abortSignal: controller.signal,
         } as any);
@@ -170,6 +196,17 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
       msgs.push({ role: "assistant", content: pendingCalls.map((c) => ({ type: "tool-call", toolCallId: c.toolCallId, toolName: c.toolName, input: c.input })) });
       const results: any[] = [];
       for (const c of pendingCalls) {
+        if (opts.planMode && (c.toolName === "write" || c.toolName === "edit")) {
+          results.push({ type: "tool-result", toolCallId: c.toolCallId, toolName: c.toolName, output: { type: "text", value: "DENIED: plan mode is read-only. Do not modify files; propose changes in your final PLAN instead." } });
+          continue;
+        }
+        if (opts.planMode && c.toolName === "bash") {
+          const why = screenPlanBash(String(c.input?.command ?? ""));
+          if (why) {
+            results.push({ type: "tool-result", toolCallId: c.toolCallId, toolName: c.toolName, output: { type: "text", value: `DENIED: plan mode forbids this (${why}). Use only read-only commands; propose changes in your final PLAN instead.` } });
+            continue;
+          }
+        }
         const decision = opts.onToolApproval ? await opts.onToolApproval(c.toolName, c.input) : "yes";
         if (decision === "abort") throw new AgentError("Aborted by user ([A]bort on tool approval)", "ABORTED");
         let output: string;

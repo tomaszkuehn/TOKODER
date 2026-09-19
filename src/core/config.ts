@@ -54,6 +54,8 @@ export type TokoderConfig = {
   compact?: Partial<CompactConfig>;
   /** agent loop step budget (0 = unlimited) */
   maxSteps?: number;
+  /** read-only mode: write/edit removed from tools, plan-only system prompt */
+  planMode?: boolean;
 };
 
 export const DEFAULT_MAX_STEPS = 100;
@@ -123,7 +125,8 @@ export function loadConfig(cwd = process.cwd()): TokoderConfig {
     l?.defaultModel ?? g?.defaultModel ?? (models.find((m) => m.id === DEFAULTS.defaultModel)?.id ?? models[0]?.id ?? DEFAULTS.defaultModel);
   const compact = { ...(g?.compact ?? {}), ...(l?.compact ?? {}) };
   const maxSteps = normalizeMaxSteps(l?.maxSteps ?? g?.maxSteps);
-  return { models, defaultModel: models.find((m) => m.id === defaultModel) ? defaultModel : models[0]?.id ?? defaultModel, compact, maxSteps };
+  const planMode = l?.planMode ?? g?.planMode ?? false;
+  return { models, defaultModel: models.find((m) => m.id === defaultModel) ? defaultModel : models[0]?.id ?? defaultModel, compact, maxSteps, planMode };
 }
 
 export function saveConfig(cfg: TokoderConfig, cwd = process.cwd(), scope?: "global" | "local"): string {

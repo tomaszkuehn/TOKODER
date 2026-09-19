@@ -2,6 +2,8 @@ import React, { useEffect, useState, useRef, useMemo } from "react";
 import { Box, Text, useInput, useApp, useStdout } from "ink";
 import { createRequire } from "node:module";
 import { writeSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 const require = createRequire(import.meta.url);
 import { runAgent, testConnection, type ToolDecision, type AccessDecision } from "../core/agent.js";
 import { loadConfig, saveConfig, normalizeCompact, compactLimit, normalizeMaxSteps, globalConfigPath, localConfigPath, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_STEPS } from "../core/config.js";
@@ -11,6 +13,7 @@ import { setEnvKey, maskKey } from "../utils/env.js";
 import { logEntry } from "../utils/logger.js";
 import { listOllamaModels, ollamaIdSuggestion } from "../utils/ollama.js";
 import { loadSession, saveSession, clearSession } from "../core/session.js";
+import { loadQuick, saveQuick, setQuickSlot, formatQuick, type QuickMap } from "../core/quick.js";
 
 export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: string; initialModel?: string; resumed?: boolean }) {
   const { exit } = useApp();
@@ -50,6 +53,14 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
   const abortRef = useRef<AbortController | null>(null);
   /** set when user says "continue" after a step-limit stop → next run gets unlimited budget, then reset */
   const continueRef = useRef(false);
+  /** quick commands: per-project slots 1-5, Ctrl+Q panel — digit OVERWRITES input with slot text; Ctrl+S saves current input */
+  const [quick, setQuick] = useState<QuickMap>(() => loadQuick());
+  const quickRef = useRef(quick);
+  useEffect(() => { quickRef.current = quick; }, [quick]);
+  /** quick panel open (Ctrl+Q): digits 1-5 insert/overwrite input */
+  const [quickOpen, setQuickOpen] = useState(false);
+  /** save mode armed by Ctrl+S (input non-empty): next digit 1-5 stores input */
+  const [quickSave, setQuickSave] = useState(false);
   const [tokenStats, setTokenStats] = useState<Record<string, { sent: number; recv: number }>>({});
   const [loc, setLoc] = useState<number | null>(null);
   const [elapsed, setElapsed] = useState(0);
@@ -190,7 +201,7 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
     setModelId(next.id);
   };
 
-  const COMMANDS = ["exit", "quit", "q", "compact", "compact-mode", "compact-auto", "steps", "agents", "init", "clear", "models", "key", "help", "allow", "deny", "session"] as const;
+  const COMMANDS = ["exit", "quit", "q", "compact", "compact-mode", "compact-auto", "steps", "plan", "quick", "agents", "init", "clear", "models", "key", "help", "allow", "deny", "session"] as const;
   const MODEL_SUBS = ["add", "rm", "default", "key", "test", "set"] as const;
 
   const getSuggestion = (raw: string): string | null => {
@@ -366,6 +377,41 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
       pushSystem(`✓ Step limit: ${n === 0 ? "unlimited" : `${n} steps per run`} (saved to ${localConfigPath() ?? globalConfigPath()})`);
       return true;
     }
+    if (c === "plan") {
+      const cur = reloadCfg();
+      if (args[0] && !["on", "off"].includes(args[0].toLowerCase())) { pushSystem("Usage: :plan [on|off] (no arg = toggle)"); return true; }
+      const next = args[0] ? args[0].toLowerCase() === "on" : !cur.planMode;
+      cur.planMode = next;
+      saveConfig(cur); reloadCfg();
+      pushSystem(next
+        ? `✓ PLAN MODE on — read-only: no write/edit, bash restricted. Model proposes a plan; nothing is modified. (:plan off to exit)`
+        : `✓ PLAN MODE off — normal mode: tools may modify files.`);
+      return true;
+    }
+    if (["quick", "qcmd"].includes(c)) {
+      if (!args[0]) {
+        pushSystem(`QUICK COMMANDS (per project — ${join(homedir(), ".config", "tokoder", "quick")})\n${formatQuick(quick)}\n\nInsert: Ctrl+Q → 1-5 (overwrites input — editable before Enter)\nSave:   type the command in input → Ctrl+S → 1-5 (overwrites slot)\nClear:  :quick clear <1-5>\nList:   :quick`);
+        return true;
+      }
+      if (args[0] === "clear" || args[0] === "rm") {
+        const n = parseInt(args[1] ?? "", 10);
+        if (!n || n < 1 || n > 5) { pushSystem("Usage: :quick clear <1-5>"); return true; }
+        const next = setQuickSlot(quick, n, "");
+        saveQuick(next); setQuick(next);
+        pushSystem(`✓ Quick [${n}] cleared.`);
+        return true;
+      }
+      if (/^[1-5]$/.test(args[0])) {
+        const text = args.slice(1).join(" ").trim();
+        if (!text) { pushSystem(`Quick [${args[0]}]: ${quick[args[0]] ? `"${quick[args[0]].text}"` : "— empty —"} (insert: Ctrl+Q → ${args[0]})`); return true; }
+        const next = setQuickSlot(quick, parseInt(args[0], 10), text);
+        saveQuick(next); setQuick(next);
+        pushSystem(`✓ Quick [${args[0]}] = "${text.slice(0, 60)}${text.length > 60 ? "…" : ""}"`);
+        return true;
+      }
+      pushSystem("Usage: :quick | :quick <1-5> <text> | :quick clear <1-5>");
+      return true;
+    }
     if (c === "session") {
       const { sessionExists } = await import("../core/session.js");
       if (args[0] === "reset" || args[0] === "clear") {
@@ -515,7 +561,9 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
       pushSystem(r.created ? `✓ Created ${r.path} with default content (≈${tok} tok sent with every prompt)` : `${r.path} already exists — see :agents`);
       return true;
     }
-    if (["help", "h", "?"].includes(c)) { pushSystem(`Commands:\n:exit / :q — exit\n:compact [instruction] — compact history (mode: :compact-mode)\n  examples: :compact keep the implementation plan\n             :compact focus on decisions and file paths\n             :compact keep open threads and next steps\n:compact-mode <reduce|balance|value> — compact strategy\n:compact-auto <on|off|percent|tokens <n>> — auto-trigger: % of context window OR absolute token limit, whichever comes first\n:steps <n> — agent step budget per run (0 = unlimited); "continue" after limit resets the budget\n:agents — project instructions file (AGENTS.md), sent with every prompt\n  :agents init | edit | add <text> | rm <line>\n:init — create AGENTS.md with defaults\n:key — set Ollama Cloud API key\n:models — list | :models add/rm — wizards | :models test <id>\n  :models set <id> contextWindow <tok> — window for auto-compact\n:allow <path> / :deny <path> — sandbox\n:session — info | :session reset — clear saved session (tocoder -c resumes)\nEsc during work = abort run | Tool prompt: [Y]es [N]o [A]bort (Shift+A always) | ACL prompt: [P]File [F]Parent [N]o [A]bort\nPgUp/PgDn scroll`); return true; }
+    if (["help", "h", "?"].includes(c)) { pushSystem(`Commands:\n:exit / :q — exit\n:compact [instruction] — compact history (mode: :compact-mode)\n  examples: :compact keep the implementation plan\n             :compact focus on decisions and file paths\n             :compact keep open threads and next steps\n:compact-mode <reduce|balance|value> — compact strategy\n:compact-auto <on|off|percent|tokens <n>> — auto-trigger: % of context window OR absolute token limit, whichever comes first\n:steps <n> — agent step budget per run (0 = unlimited); "continue" after limit resets the budget
+:plan [on|off] — read-only plan mode: no file modifications, model proposes a plan instead
+:quick — quick commands (slots 1-5, per project): Ctrl+Q → digit overwrites input (editable); Ctrl+S (input non-empty) → digit saves it\n:agents — project instructions file (AGENTS.md), sent with every prompt\n  :agents init | edit | add <text> | rm <line>\n:init — create AGENTS.md with defaults\n:key — set Ollama Cloud API key\n:models — list | :models add/rm — wizards | :models test <id>\n  :models set <id> contextWindow <tok> — window for auto-compact\n:allow <path> / :deny <path> — sandbox\n:session — info | :session reset — clear saved session (tocoder -c resumes)\nEsc during work = abort run | Tool prompt: [Y]es [N]o [A]bort (Shift+A always) | ACL prompt: [P]File [F]Parent [N]o [A]bort\nPgUp/PgDn scroll`); return true; }
     pushSystem(`Unknown command ":${c}". Try :help`); return true;
   };
 
@@ -636,6 +684,31 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
     }
     if (key.pageUp) { setScroll((s) => Math.min(maxScroll, s + 5)); return; }
     if (key.pageDown) { setScroll((s) => Math.max(0, s - 5)); return; }
+    if (key.ctrl && char === "q" && !busy) { setQuickOpen((o) => !o); return; }
+    if (key.ctrl && char === "s" && !busy && input.trim() && !wizard && !pendingTool && !pendingAccess) {
+      setQuickOpen(false);
+      setQuickSave((s) => !s);
+      return;
+    }
+    if (quickSave && /^[1-5]$/.test(char ?? "") && !wizard && !pendingTool && !pendingAccess) {
+      const text = input.trim();
+      if (!text) { setQuickSave(false); return; }
+      const next = setQuickSlot(quickRef.current, parseInt(char, 10), text);
+      saveQuick(next); setQuick(next);
+      setQuickSave(false);
+      pushSystem(`✓ Quick [${char}] = "${text.slice(0, 60)}${text.length > 60 ? "…" : ""}"`);
+      return;
+    }
+    if (quickSave && (key.escape || key.return)) { setQuickSave(false); return; }
+    if (quickOpen && /^[1-5]$/.test(char ?? "") && !wizard && !pendingTool && !pendingAccess) {
+      const s = quickRef.current[char];
+      setQuickOpen(false);
+      if (!s) { pushSystem(`Quick [${char}] is empty — type the command, Ctrl+S, then ${char} to save it.`); return; }
+      setInput(s.text);
+      pushSystem(`⌁ Quick [${char}] overwrote input — edit if needed, Enter sends.`);
+      return;
+    }
+    if (quickOpen && (key.escape || key.return)) { setQuickOpen(false); return; }
     if (key.escape && busy && abortRef.current && !accessRef.current && !approvalRef.current) { abortRef.current.abort(); pushSystem("⛔ Aborting…"); return; }
     if (key.escape) { setWizard(null); setHistIdx(-1); pushSystem("Cancelled (Esc — exit only via :exit)."); return; }
     if (key.ctrl && char === "c") exit();
@@ -694,6 +767,7 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
           return false;
         };
         for await (const chunk of runAgent(effectivePrompt, { modelId, timeoutMs: 300000, history, abortSignal: ac.signal,
+          planMode: !!cfgRef.current.planMode,
           maxSteps: useContinue ? 0 : normalizeMaxSteps(cfgRef.current.maxSteps),
           onToolApproval: async (name, args) => {
             if (autoOk(name, args)) return "yes";
@@ -819,9 +893,21 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
             <Text color={wizard ? "cyan" : busy ? "gray" : isCmd ? "yellow" : "yellow"} wrap="wrap">{wizard ? wizardPrompt(wizard) : busy ? (pendingTool ? "" : "(busy…)") : isCmd ? input.slice(1) : input}{suggestion && !busy && !wizard ? <Text dimColor>{suggestion}</Text> : null}</Text>
             {!wizard && <Text backgroundColor={busy ? undefined : isCmd ? "yellow" : "white"} color={isCmd ? "black" : "white"}> </Text>}
           </Box>
-          <Text dimColor>{ctxUsed.toLocaleString("en-US")}/{ctxLabel} tok ({ctxPct}%)</Text>
+          <Text dimColor>{ctxUsed.toLocaleString("en-US")}/{ctxLabel} tok ({ctxPct}%){cfg.planMode ? <Text color="yellow" bold> · PLAN</Text> : null}</Text>
         </Box>
         {wizard && <Text dimColor wrap="wrap">→ {input || "(type answer)"} ▌   (:q aborts)</Text>}
+        {quickSave && (
+          <Box flexDirection="column" marginTop={1}>
+            <Text bold color="cyan">SAVE TO SLOT — press 1-5 to store current input · Esc = cancel</Text>
+            {formatQuick(quick).split("\n").map((ln) => <Text key={ln} color="cyan">{ln}</Text>)}
+          </Box>
+        )}
+        {quickOpen && !quickSave && (
+          <Box flexDirection="column" marginTop={1}>
+            <Text bold color="green">QUICK — 1-5 overwrites input (editable) · Esc/Ctrl+Q = close · Ctrl+S = save current input</Text>
+            {formatQuick(quick).split("\n").map((ln) => <Text key={ln} color="green">{ln}</Text>)}
+          </Box>
+        )}
         {pendingAccess && (
           <Box flexDirection="column">
             <Text color="red" bold>🔒 ACCESS OUTSIDE PROJECT ({pendingAccess.mode})</Text>
@@ -839,7 +925,7 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
         {suggestion && !busy && <Box><Text dimColor>↹Tab → :{input.slice(1) + suggestion}  ↵Enter executes</Text></Box>}
         {input.length > innerW && <Box><Text dimColor>↔ {input.length}/{innerW} chars — wraps</Text></Box>}
       </Box>
-      <Box flexShrink={0}><Text dimColor wrap="wrap">↑↓ history {histIdx >= 0 ? `(${histIdx + 1}/${cmdHistory.length})` : ""} (editable) | PgUp/PgDn scroll | :models test {modelId} | {visibleLines.length}/{flatLines.length} lines{suggestion ? ` | :${input.slice(1) + suggestion}` : ""}</Text></Box>
+      <Box flexShrink={0}><Text dimColor wrap="wrap">↑↓ history {histIdx >= 0 ? `(${histIdx + 1}/${cmdHistory.length})` : ""} (editable) | PgUp/PgDn scroll | Ctrl+Q quick · Ctrl+S save | :models test {modelId} | {visibleLines.length}/{flatLines.length} lines{suggestion ? ` | :${input.slice(1) + suggestion}` : ""}</Text></Box>
     </Box>
   );
 }

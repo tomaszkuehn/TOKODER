@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { screenCommand } from "../src/tools/bash.js";
 import { setEnvKey } from "../src/utils/env.js";
+import { loadQuick, saveQuick, setQuickSlot, formatQuick } from "../src/core/quick.js";
 import { readFileSync, writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -80,5 +81,37 @@ describe("stats path", () => {
     const src = readFileSync(join(process.cwd(), "src", "utils", "stats.ts"), "utf-8");
     expect(src).not.toContain("pantomas");
     expect(src).toContain("homedir");
+  });
+});
+
+describe("quick slots", () => {
+  it("set/load/clear roundtrip", () => {
+    const dir = mkdtempSync(join(tmpdir(), "quick-"));
+    let map = loadQuick(dir);
+    expect(Object.keys(map).length).toBe(0);
+    map = setQuickSlot(map, 3, "npm test");
+    map = setQuickSlot(map, 5, ":plan on");
+    saveQuick(map, dir);
+    const loaded = loadQuick(dir);
+    expect(loaded["3"]?.text).toBe("npm test");
+    expect(loaded["5"]?.text).toBe(":plan on");
+    const cleared = setQuickSlot(loaded, 3, "");
+    expect(cleared["3"]).toBeUndefined();
+    expect(cleared["5"]?.text).toBe(":plan on");
+  });
+
+  it("rejects slots outside 1-5", () => {
+    let map = setQuickSlot({}, 9, "nope");
+    expect(map["9"]).toBeUndefined();
+    map = setQuickSlot({}, 5, "ok");
+    expect(map["5"]?.text).toBe("ok");
+  });
+
+  it("formatQuick renders 5 rows with labels", () => {
+    const map = setQuickSlot({}, 1, "git status --short");
+    const out = formatQuick(map);
+    expect(out.split("\n").length).toBe(5);
+    expect(out).toContain("1| git status --short");
+    expect(out).toContain("5| — empty —");
   });
 });

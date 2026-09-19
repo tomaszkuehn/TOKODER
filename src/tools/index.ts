@@ -15,6 +15,8 @@ export const agentTools = {
   grep: tool({ description: "Search file contents by regex", inputSchema: grepSchema }),
 };
 
+export const agentToolNames = Object.keys(agentTools);
+
 export type ToolCtx = { signal?: AbortSignal };
 export const executors: Record<string, (args: any, ctx?: ToolCtx) => Promise<any>> = {
   read: readTool as any,
