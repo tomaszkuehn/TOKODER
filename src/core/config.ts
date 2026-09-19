@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 
 export type ModelConfig = {
@@ -25,6 +25,14 @@ const DEFAULTS: TokoderConfig = {
 
 const CANDIDATES = ["tokoder.config.json", ".tokoder.json", "tokoder.config.jsonc"];
 
+function configPath(cwd = process.cwd()): string {
+  for (const name of CANDIDATES) {
+    const p = resolve(cwd, name);
+    if (existsSync(p)) return p;
+  }
+  return resolve(cwd, "tokoder.config.json");
+}
+
 export function loadConfig(cwd = process.cwd()): TokoderConfig {
   for (const name of CANDIDATES) {
     const p = resolve(cwd, name);
@@ -32,7 +40,7 @@ export function loadConfig(cwd = process.cwd()): TokoderConfig {
       try {
         const raw = readFileSync(p, "utf-8");
         const parsed = JSON.parse(raw) as TokoderConfig;
-        if (parsed.models?.length) return { ...DEFAULTS, ...parsed };
+        if (parsed.models?.length) return { ...DEFAULTS, ...parsed, models: parsed.models };
       } catch {}
     }
   }
@@ -46,6 +54,11 @@ export function loadConfig(cwd = process.cwd()): TokoderConfig {
     }
   }
   return DEFAULTS;
+}
+
+export function saveConfig(cfg: TokoderConfig, cwd = process.cwd()): void {
+  const p = configPath(cwd);
+  writeFileSync(p, JSON.stringify(cfg, null, 2) + "\n", "utf-8");
 }
 
 export function getModelConfig(id: string, cfg = loadConfig()): ModelConfig | undefined {
