@@ -13,9 +13,9 @@
       "apiKeyEnv": "OPENAI_API_KEY"
     },
     {
-      "id": "gemini-flash",
+      "id": "laguna",
       "provider": "openrouter",
-      "model": "google/gemini-2.0-flash-001",
+      "model": "poolside/laguna-m.1:free",
       "apiKeyEnv": "OPENROUTER_API_KEY",
       "baseURL": "https://openrouter.ai/api/v1"
     },
