@@ -301,6 +301,10 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
         const n = parseInt(args[1] ?? "", 10);
         if (!n || n < 1000) { pushSystem("Token limit: >= 1000 (0 disables). Usage: :compact-auto tokens <n>"); return true; }
         cur.compact = { ...cc, autoTrigger: true, maxTokens: n };
+      } else if (a === "percent" || a === "pct") {
+        const p = parseInt(args[1] ?? "", 10);
+        if (!p || p < 10 || p > 100) { pushSystem("Percent: 10-100. Usage: :compact-auto percent <n>"); return true; }
+        cur.compact = { ...cc, autoTrigger: true, thresholdPercent: p };
       } else if (/^\d+$/.test(a)) {
         const p = parseInt(a, 10);
         if (p < 10 || p > 100) { pushSystem("Percent: 10-100."); return true; }

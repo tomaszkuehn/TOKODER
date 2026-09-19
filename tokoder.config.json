@@ -22,5 +22,11 @@
       "baseURL": "https://ollama.com/v1"
     }
   ],
-  "defaultModel": "deepseek0731"
+  "defaultModel": "deepseek0731",
+  "compact": {
+    "mode": "balance",
+    "autoTrigger": true,
+    "thresholdPercent": 70,
+    "maxTokens": 20000
+  }
 }
