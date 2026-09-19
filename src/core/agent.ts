@@ -28,17 +28,20 @@ export class AgentError extends Error {
   }
 }
 
-export async function* runAgent(prompt: string, opts: AgentOpts = {}, onUsage?: (u: Usage) => void) {
+export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { role: "user" | "assistant"; content: string }[] } = {}, onUsage?: (u: Usage) => void) {
   const cfg = opts.modelConfig ?? resolveModel(opts.modelId);
   const mdl = getModelFromConfig(cfg);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), opts.timeoutMs ?? 60_000);
   let result: any;
   try {
+    const msgs = opts.history?.length
+      ? [...opts.history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })), { role: "user" as const, content: prompt }]
+      : undefined;
     result = streamText({
       model: mdl,
       system: SYSTEM,
-      prompt,
+      ...(msgs ? { messages: msgs } : { prompt }),
       tools,
       maxSteps: 20,
       abortSignal: controller.signal,

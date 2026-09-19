@@ -12,6 +12,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
   const [modelId, setModelId] = useState(initialModel ?? cfg.defaultModel);
   const [input, setInput] = useState(initialPrompt ?? "");
   const [messages, setMessages] = useState<{ role: "user" | "assistant" | "system" | "error"; text: string }[]>([]);
+  const historyRef = useRef<{ role: "user" | "assistant"; content: string }[]>([]);
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(0);
   const [recv, setRecv] = useState(0);
@@ -252,13 +253,16 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
         if (completed !== prompt) prompt = completed;
       }
       if (await handleCommand(prompt)) return;
+      const isChoice = /^\s*[1-3]\s*$/.test(prompt) && historyRef.current.length > 0;
+      const effectivePrompt = isChoice ? `My choice is "${prompt.trim()}". Continue with option ${prompt.trim()} from your last list.` : prompt;
       setMessages((m) => [...m, { role: "user", text: prompt }]);
       setBusy(true); setLastErr(null);
       setSent((s) => s + estimateTokens(prompt));
       let acc = ""; setMessages((m) => [...m, { role: "assistant", text: "" }]);
       const toolLog: string[] = [];
+      const history = [...historyRef.current];
       try {
-        for await (const chunk of runAgent(prompt, { modelId, timeoutMs: 60000, onToolCall: (n, a) => { const line = `→ ${n} ${JSON.stringify(a).slice(0, 120)}`; toolLog.push(line); pushSystem(line); }, onToolResult: (n, r) => { pushSystem(`← ${n}: ${r.slice(0, 120)}`); } }, (u) => {
+        for await (const chunk of runAgent(effectivePrompt, { modelId, timeoutMs: 60000, history, onToolCall: (n, a) => { const line = `→ ${n} ${JSON.stringify(a).slice(0, 120)}`; toolLog.push(line); pushSystem(line); }, onToolResult: (n, r) => { pushSystem(`← ${n}: ${r.slice(0, 120)}`); } }, (u) => {
           setSent((s) => s + u.inputTokens - estimateTokens(prompt));
           setRecv((r) => r + u.outputTokens);
         })) {
@@ -271,6 +275,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
           if (toolLog.length) { acc = `[done — tools: ${toolLog.join(", ")}]`; setMessages((m) => { const c=[...m]; c[c.length-1]={role:"assistant", text:acc}; return c; }); }
           else pushError(`[${modelId}] empty — :models test ${modelId}`);
         } else setRecv((r) => r + estimateTokens(acc));
+        historyRef.current = [...history, { role: "user" as const, content: effectivePrompt }, { role: "assistant" as const, content: acc }].slice(-20);
       } catch (e: any) {
         pushError(e.message ?? String(e));
         setMessages((m) => {
