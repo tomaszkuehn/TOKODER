@@ -19,7 +19,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
   const draftRef = useRef("");
   const [busy, setBusy] = useState(false);
   const [pendingTool, setPendingTool] = useState<{ name: string; args: any } | null>(null);
-  const [wizard, setWizard] = useState<null | { step: "kind" | "model" | "id"; kind?: "local" | "cloud"; models?: string[]; model?: string }>(null);
+  const [wizard, setWizard] = useState<null | { step: "kind" | "model" | "id"; kind?: "local" | "cloud"; models?: string[]; model?: string; suggestedId?: string }>(null);
   const approvalRef = useRef<((d: ToolDecision) => void) | null>(null);
   const alwaysRef = useRef<Set<string>>(new Set());
   const [tokenStats, setTokenStats] = useState<Record<string, { sent: number; recv: number }>>({});
@@ -287,10 +287,18 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
     pushSystem(`Unknown command ":${c}". Try :help`); return true;
   };
 
+  const suggestFreeId = (model: string, models: { id: string }[]): string => {
+    const base = ollamaIdSuggestion(model);
+    if (!models.find((m) => m.id === base)) return base;
+    let n = 2;
+    while (models.find((m) => m.id === `${base}-${n}`)) n++;
+    return `${base}-${n}`;
+  };
+
   const wizardPrompt = (w: NonNullable<typeof wizard>): string => {
     if (w.step === "kind") return "DODAWANIE MODELU — 1: Ollama lokalny (localhost:11434), 2: Ollama Cloud (ollama.com)";
     if (w.step === "model") return `Wybierz model — numer z listy lub wpisz nazwę ręcznie (${w.models?.length ?? 0} znalezionych, "n" = własna nazwa)`;
-    return `ID konfiguracji dla ${w.model} (Enter = "${ollamaIdSuggestion(w.model ?? "")}")`;
+    return `ID dla ${w.model} (Enter = "${w.suggestedId}")`;
   };
 
   const handleWizard = async (value: string) => {
@@ -317,11 +325,11 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       else if (v.toLowerCase() === "n") { pushSystem('Wpisz pełną nazwę modelu (np. "qwen3-coder:480b").'); return; }
       else model = v;
       if (!model) { pushSystem(`Nie ma takiego numeru (1-${w.models?.length ?? 0}).`); return; }
-      setWizard({ ...w, step: "id", model });
+      setWizard({ ...w, step: "id", model, suggestedId: suggestFreeId(w.model ?? "", cfg.models) });
       return;
     }
     if (w.step === "id") {
-      const id = v || ollamaIdSuggestion(w.model ?? "");
+      const id = v || w.suggestedId || ollamaIdSuggestion(w.model ?? "");
       const cur = reloadCfg();
       if (cur.models.find((m) => m.id === id)) { pushSystem(`ID "${id}" już istnieje — podaj inne.`); return; }
       const isCloud = w.kind === "cloud";
