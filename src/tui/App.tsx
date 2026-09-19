@@ -346,19 +346,23 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
         {visible.length === 0 && messages.length === 0 && !busy && <Text dimColor> Brak wiadomości — :help</Text>}
         {visible.length === 0 && messages.length > 0 && <Text dimColor> — scrolled — PgDn to bottom — {messages.length} msgs</Text>}
         {visible.map((m, i) => (
-          <Box key={i} flexDirection="column" flexShrink={0} marginTop={m.role === "user" ? 1 : 0}>
-            <Text color={m.role === "user" ? "blue" : m.role === "system" ? "yellow" : m.role === "error" ? "red" : "white"} bold>{m.role === "user" ? "› TY:" : m.role === "system" ? "◆ SYS:" : m.role === "error" ? "✗ ERR:" : "● AI:"}</Text>
-            <Text color={m.role === "error" ? "red" : m.role === "system" ? "yellow" : undefined}>{m.text || (busy ? "…" : "")}</Text>
+          <Box key={i} flexDirection="column" flexShrink={0} marginTop={m.role === "user" ? 1 : 0} width={innerW}>
+            <Text color={m.role === "user" ? "blue" : m.role === "system" ? "yellow" : m.role === "error" ? "red" : "white"} bold wrap="wrap">{m.role === "user" ? "› TY:" : m.role === "system" ? "◆ SYS:" : m.role === "error" ? "✗ ERR:" : "● AI:"}</Text>
+            <Text color={m.role === "error" ? "red" : m.role === "system" ? "yellow" : undefined} wrap="wrap">{m.text || (busy ? "…" : "")}</Text>
           </Box>
         ))}
       </Box>
 
-      <Box flexShrink={0} borderStyle="round" borderColor={isCmd ? "yellow" : lastErr ? "red" : "magenta"} marginTop={1} paddingX={1}>
-        <Text color={isCmd ? "yellow" : "magenta"} bold>{isCmd ? ":" : "›"} </Text>
-        <Text color={busy ? "gray" : isCmd ? "yellow" : "yellow"}>{busy ? "(zajęty…)" : isCmd ? input.slice(1) : input}{suggestion && !busy ? <Text dimColor>{suggestion}</Text> : null}<Text backgroundColor={busy ? undefined : isCmd ? "yellow" : "white"} color={isCmd ? "black" : "white"}> </Text></Text>
-        {suggestion && !busy && <Text dimColor> ↹Tab {isCmd ? input.slice(1) + suggestion : ""}  ↵Enter executes</Text>}
+      <Box flexShrink={0} borderStyle="round" borderColor={isCmd ? "yellow" : lastErr ? "red" : "magenta"} marginTop={1} paddingX={1} flexDirection="column">
+        <Box flexDirection="row" flexWrap="wrap" width={innerW}>
+          <Text color={isCmd ? "yellow" : "magenta"} bold>{isCmd ? ":" : "›"} </Text>
+          <Text color={busy ? "gray" : isCmd ? "yellow" : "yellow"} wrap="wrap">{busy ? "(zajęty…)" : isCmd ? input.slice(1) : input}{suggestion && !busy ? <Text dimColor>{suggestion}</Text> : null}</Text>
+          <Text backgroundColor={busy ? undefined : isCmd ? "yellow" : "white"} color={isCmd ? "black" : "white"}> </Text>
+        </Box>
+        {suggestion && !busy && <Box><Text dimColor>↹Tab → :{input.slice(1) + suggestion}  ↵Enter executes</Text></Box>}
+        {input.length > innerW && <Box><Text dimColor>↔ {input.length}/{innerW} chars — wraps</Text></Box>}
       </Box>
-      <Box flexShrink={0}><Text dimColor> PgUp/PgDn/↑↓ scroll | :models test {modelId} | {visible.length}/{messages.length} msgs{suggestion ? ` | suggestion: :${input.slice(1) + suggestion}` : ""}</Text></Box>
+      <Box flexShrink={0}><Text dimColor wrap="wrap">↑↓ history {histIdx >= 0 ? `(${histIdx + 1}/${cmdHistory.length})` : ""} | PgUp/PgDn scroll | :models test {modelId} | {visible.length}/{messages.length} msgs{suggestion ? ` | :${input.slice(1) + suggestion}` : ""}</Text></Box>
     </Box>
   );
 }
