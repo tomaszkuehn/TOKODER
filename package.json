@@ -2,6 +2,7 @@
   "name": "tokoder",
   "version": "0.1.0",
   "description": "AI coding agent - opencode/claude-code clone",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "tokoder": "./dist/cli.js",
