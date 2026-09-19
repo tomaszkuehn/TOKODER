@@ -6,11 +6,20 @@ import { bashSchema, bashTool } from "./bash.js";
 import { globSchema, globTool } from "./glob.js";
 import { grepSchema, grepTool } from "./grep.js";
 
-export const tools = {
-  read: tool({ description: "Read file or directory", inputSchema: readSchema, execute: readTool as any }),
-  write: tool({ description: "Write file (creates dirs)", inputSchema: writeSchema, execute: writeTool as any }),
-  edit: tool({ description: "Exact string replacement in file", inputSchema: editSchema, execute: editTool as any }),
-  bash: tool({ description: "Execute shell command (PowerShell/WSL)", inputSchema: bashSchema, execute: bashTool as any }),
-  glob: tool({ description: "Find files by glob pattern", inputSchema: globSchema, execute: globTool as any }),
-  grep: tool({ description: "Search file contents by regex", inputSchema: grepSchema, execute: grepTool as any }),
+export const agentTools = {
+  read: tool({ description: "Read file or directory", inputSchema: readSchema }),
+  write: tool({ description: "Write file (creates dirs)", inputSchema: writeSchema }),
+  edit: tool({ description: "Exact string replacement in file", inputSchema: editSchema }),
+  bash: tool({ description: "Execute shell command (PowerShell/WSL)", inputSchema: bashSchema }),
+  glob: tool({ description: "Find files by glob pattern", inputSchema: globSchema }),
+  grep: tool({ description: "Search file contents by regex", inputSchema: grepSchema }),
+};
+
+export const executors: Record<string, (args: any) => Promise<any>> = {
+  read: readTool as any,
+  write: writeTool as any,
+  edit: editTool as any,
+  bash: bashTool as any,
+  glob: globTool as any,
+  grep: grepTool as any,
 };

@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef, useMemo } from "react";
 import { Box, Text, useInput, useApp, useStdout } from "ink";
-import { runAgent, testConnection } from "../core/agent.js";
+import { runAgent, testConnection, type ToolDecision } from "../core/agent.js";
 import { loadConfig, saveConfig } from "../core/config.js";
 import { countLOC, detectEnvs, formatDuration, estimateTokens } from "../utils/stats.js";
 import { setEnvKey, maskKey } from "../utils/env.js";
@@ -17,14 +17,26 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
   const [histIdx, setHistIdx] = useState(-1);
   const draftRef = useRef("");
   const [busy, setBusy] = useState(false);
-  const [sent, setSent] = useState(0);
-  const [recv, setRecv] = useState(0);
+  const [pendingTool, setPendingTool] = useState<{ name: string; args: any } | null>(null);
+  const approvalRef = useRef<((d: ToolDecision) => void) | null>(null);
+  const alwaysRef = useRef<Set<string>>(new Set());
+  const [tokenStats, setTokenStats] = useState<Record<string, { sent: number; recv: number }>>({});
   const [loc, setLoc] = useState<number | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [lastErr, setLastErr] = useState<string | null>(null);
   const [envs] = useState(() => detectEnvs());
   const [scroll, setScroll] = useState(0);
   const startRef = useRef(Date.now());
+
+  const bumpTokens = (id: string, s: number, r: number) =>
+    setTokenStats((st) => {
+      const cur = st[id] ?? { sent: 0, recv: 0 };
+      return { ...st, [id]: { sent: cur.sent + s, recv: cur.recv + r } };
+    });
+  const active = cfg.models.find((m) => m.id === modelId)!;
+  const usedModels = Object.keys(tokenStats);
+  const curTok = tokenStats[modelId] ?? { sent: 0, recv: 0 };
+  const totTok = usedModels.reduce((a, id) => ({ sent: a.sent + tokenStats[id].sent, recv: a.recv + tokenStats[id].recv }), { sent: 0, recv: 0 });
 
   const reloadCfg = () => {
     const c = loadConfig();
@@ -205,7 +217,6 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
         const keep = 2;
         const removed = messages.length - keep;
         setMessages((m) => [{ role: "system", text: `[COMPACT] Removed ${removed} messages.` }, ...m.slice(-keep)]);
-        setSent(0); setRecv(0);
       }
       return true;
     }
@@ -274,6 +285,13 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
   };
 
   useInput(async (char, key) => {
+    if (approvalRef.current) {
+      const c = char?.toLowerCase();
+      if (c === "t" || c === "y" || key.return) { const r = approvalRef.current; approvalRef.current = null; setPendingTool(null); r("yes"); }
+      else if (c === "n" || key.escape) { const r = approvalRef.current; approvalRef.current = null; setPendingTool(null); r("no"); }
+      else if (c === "a") { const r = approvalRef.current; approvalRef.current = null; setPendingTool(null); if (pendingTool) alwaysRef.current.add(pendingTool.name); r("always"); }
+      return;
+    }
     if (key.pageUp) { setScroll((s) => Math.min(maxScroll, s + 5)); return; }
     if (key.pageDown) { setScroll((s) => Math.max(0, s - 5)); return; }
     if (key.escape || (key.ctrl && char === "c")) exit();
@@ -301,14 +319,20 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       }
       setMessages((m) => [...m, { role: "user", text: prompt }]);
       setBusy(true); setLastErr(null);
-      setSent((s) => s + estimateTokens(prompt));
+      bumpTokens(modelId, estimateTokens(prompt), 0);
+      let usageSeen = false;
       let acc = ""; setMessages((m) => [...m, { role: "assistant", text: "" }]);
       const toolLog: string[] = [];
       const history = [...historyRef.current];
       try {
-        for await (const chunk of runAgent(effectivePrompt, { modelId, timeoutMs: 300000, history, onToolCall: (n, a) => { const line = `→ ${n} ${JSON.stringify(a).slice(0, 120)}`; toolLog.push(line); pushSystem(line); }, onToolResult: (n, r) => { pushSystem(`← ${n}: ${r.slice(0, 120)}`); } }, (u) => {
-          setSent((s) => s + u.inputTokens - estimateTokens(prompt));
-          setRecv((r) => r + u.outputTokens);
+        for await (const chunk of runAgent(effectivePrompt, { modelId, timeoutMs: 300000, history,
+          onToolApproval: async (name, args) => {
+            if (alwaysRef.current.has(name)) return "always";
+            return await new Promise<ToolDecision>((resolve) => { approvalRef.current = resolve; setPendingTool({ name, args }); });
+          },
+          onToolCall: (n, a) => { const line = `→ ${n} ${JSON.stringify(a).slice(0, 120)}`; toolLog.push(line); pushSystem(line); }, onToolResult: (n, r) => { pushSystem(`← ${n}: ${r.slice(0, 120)}`); } }, (u) => {
+          usageSeen = true;
+          bumpTokens(modelId, u.inputTokens, u.outputTokens);
         })) {
           acc += chunk;
           setMessages((m) => {
@@ -318,7 +342,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
         if (!acc.trim()) {
           if (toolLog.length) { acc = `[done — tools: ${toolLog.join(", ")}]`; setMessages((m) => { const c=[...m]; c[c.length-1]={role:"assistant", text:acc}; return c; }); }
           else pushError(`[${modelId}] empty — :models test ${modelId}`);
-        } else setRecv((r) => r + estimateTokens(acc));
+        } else if (!usageSeen) bumpTokens(modelId, 0, estimateTokens(acc));
         historyRef.current = [...history, { role: "user" as const, content: effectivePrompt }, { role: "assistant" as const, content: acc }].slice(-20);
       } catch (e: any) {
         pushError(e.message ?? String(e));
@@ -341,8 +365,6 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       return;
     } else if (!key.ctrl && !key.meta && char) { setInput((s) => s + char); }
   });
-
-  const active = cfg.models.find((m) => m.id === modelId)!;
   const isCmd = input.startsWith(":");
   const suggestion = getSuggestion(input);
 
@@ -359,7 +381,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
 
       <Box flexShrink={0} borderStyle="round" borderColor={lastErr ? "red" : "yellow"} marginTop={1} paddingX={1} flexDirection="column">
         <Text bold color={lastErr ? "red" : "yellow"}>● STATUS {lastErr ? "— ERROR" : ""}</Text>
-        <Text><Text color="cyan">Model: </Text><Text bold>{active.id}</Text><Text dimColor> ({active.provider}/{active.model})</Text><Text>  │  </Text><Text color="green">↑ {sent}</Text><Text dimColor> sent</Text><Text> </Text><Text color="magenta">↓ {recv}</Text><Text dimColor> recv</Text></Text>
+        <Text><Text color="cyan">Model: </Text><Text bold>{active.id}</Text><Text dimColor> ({active.provider}/{active.model})</Text><Text>  │  </Text><Text color="green">↑ {curTok.sent.toLocaleString("pl-PL")}</Text><Text dimColor> sent</Text><Text> </Text><Text color="magenta">↓ {curTok.recv.toLocaleString("pl-PL")}</Text><Text dimColor> recv</Text>{usedModels.length > 1 && <Text dimColor>  (∑ {usedModels.length} models: ↑{totTok.sent.toLocaleString("pl-PL")} ↓{totTok.recv.toLocaleString("pl-PL")})</Text>}</Text>
         <Text><Text color="cyan">LOC: </Text><Text>{loc === null ? "…" : loc.toLocaleString("pl-PL")}</Text><Text>  │  </Text><Text color="cyan">Czas: </Text><Text>{formatDuration(elapsed)}</Text><Text>  │  </Text><Text color="cyan">Env: </Text>{envs.map((e, i) => <Text key={e.label} color={e.ok ? "green" : "gray"}>{i ? " " : ""}{e.ok ? "✓" : "✗"}{e.label}</Text>)}</Text>
         {lastErr && <Text color="red">✗ {lastErr}</Text>}
       </Box>
@@ -386,9 +408,16 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       <Box flexShrink={0} borderStyle="round" borderColor={isCmd ? "yellow" : lastErr ? "red" : "magenta"} marginTop={1} paddingX={1} flexDirection="column">
         <Box flexDirection="row" flexWrap="wrap" width={innerW}>
           <Text color={isCmd ? "yellow" : "magenta"} bold>{isCmd ? ":" : "›"} </Text>
-          <Text color={busy ? "gray" : isCmd ? "yellow" : "yellow"} wrap="wrap">{busy ? "(zajęty…)" : isCmd ? input.slice(1) : input}{suggestion && !busy ? <Text dimColor>{suggestion}</Text> : null}</Text>
+          <Text color={busy ? "gray" : isCmd ? "yellow" : "yellow"} wrap="wrap">{busy ? (pendingTool ? "" : "(zajęty…)") : isCmd ? input.slice(1) : input}{suggestion && !busy ? <Text dimColor>{suggestion}</Text> : null}</Text>
           <Text backgroundColor={busy ? undefined : isCmd ? "yellow" : "white"} color={isCmd ? "black" : "white"}> </Text>
         </Box>
+        {pendingTool && (
+          <Box flexDirection="column">
+            <Text color="cyan" bold>⚡ Tool: {pendingTool.name}</Text>
+            <Text dimColor wrap="truncate">{JSON.stringify(pendingTool.args).slice(0, innerW - 2)}</Text>
+            <Text bold color="yellow">[T]ak  [N]ie  [A]zawsze dla {pendingTool.name}</Text>
+          </Box>
+        )}
         {suggestion && !busy && <Box><Text dimColor>↹Tab → :{input.slice(1) + suggestion}  ↵Enter executes</Text></Box>}
         {input.length > innerW && <Box><Text dimColor>↔ {input.length}/{innerW} chars — wraps</Text></Box>}
       </Box>
