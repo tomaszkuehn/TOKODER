@@ -13,6 +13,9 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
   const [input, setInput] = useState(initialPrompt ?? "");
   const [messages, setMessages] = useState<{ role: "user" | "assistant" | "system" | "error"; text: string }[]>([]);
   const historyRef = useRef<{ role: "user" | "assistant"; content: string }[]>([]);
+  const [cmdHistory, setCmdHistory] = useState<string[]>([]);
+  const [histIdx, setHistIdx] = useState(-1);
+  const draftRef = useRef("");
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(0);
   const [recv, setRecv] = useState(0);
@@ -261,12 +264,14 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       cycleModel(key.shift ? -1 : 1); return;
     }
     if (key.return && !busy && input.trim()) {
-      let prompt = input; setInput("");
+      let prompt = input; setInput(""); setHistIdx(-1); draftRef.current = "";
       if (prompt.startsWith(":")) {
         const completed = completeInput(prompt);
         if (completed !== prompt) prompt = completed;
       }
-      if (await handleCommand(prompt)) return;
+      const wasCmd = prompt.startsWith(":");
+      if (await handleCommand(prompt)) { if (!wasCmd) { setCmdHistory((h) => [...h, prompt]); } return; }
+      setCmdHistory((h) => [...h, prompt]);
       const isChoice = /^\s*[1-3]\s*$/.test(prompt) && historyRef.current.length > 0;
       const effectivePrompt = isChoice ? `My choice is "${prompt.trim()}". Continue with option ${prompt.trim()} from your last list.` : prompt;
       setMessages((m) => [...m, { role: "user", text: prompt }]);
@@ -298,10 +303,18 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
           return copy;
         });
       } finally { countLOC().then(setLoc); setBusy(false); setScroll(0); }
-    } else if (key.backspace || key.delete) setInput((s) => s.slice(0, -1));
-    else if (key.upArrow && scroll < 100) setScroll((s) => s + 2);
-    else if (key.downArrow) setScroll((s) => Math.max(0, s - 2));
-    else if (!key.ctrl && !key.meta && char) setInput((s) => s + char);
+    } else if (key.backspace || key.delete) { setHistIdx(-1); setInput((s) => s.slice(0, -1)); }
+    else if (key.upArrow) {
+      if (cmdHistory.length === 0) return;
+      if (histIdx === -1) { draftRef.current = input; const idx = cmdHistory.length - 1; setHistIdx(idx); setInput(cmdHistory[idx]); }
+      else if (histIdx > 0) { const idx = histIdx - 1; setHistIdx(idx); setInput(cmdHistory[idx]); }
+      return;
+    } else if (key.downArrow) {
+      if (histIdx === -1) return;
+      if (histIdx === cmdHistory.length - 1) { setHistIdx(-1); setInput(draftRef.current); }
+      else { const idx = histIdx + 1; setHistIdx(idx); setInput(cmdHistory[idx]); }
+      return;
+    } else if (!key.ctrl && !key.meta && char) { if (histIdx !== -1) setHistIdx(-1); setInput((s) => s + char); }
   });
 
   const active = cfg.models.find((m) => m.id === modelId)!;
