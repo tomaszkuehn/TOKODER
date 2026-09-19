@@ -102,6 +102,12 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
         if (stepText.length) parts.push({ text: stepText.join("") });
         for (const c of pendingCalls) parts.push({ toolCall: { toolName: c.toolName, input: c.input } });
         if (parts.length) logEntry("ODPOWIEDZ", cfg.id, JSON.stringify(parts, null, 2));
+        if (parts.length > 1) logEntry("ODPOWIEDZ-CZESCI", cfg.id, parts.map((p, i) => `--- część ${i + 1} (${p.text !== undefined ? "tekst" : `tool:${p.toolCall.toolName}`}) ---\n${p.text !== undefined ? p.text : JSON.stringify(p.toolCall, null, 2)}`).join("\n"));
+        const txt = stepText.join("");
+        if (txt) {
+          const opts2 = [...txt.matchAll(/^\s{0,4}(\d{1,2})[.)\-]\s+(\S.*)$/gm)].map((m) => `${m[1]}. ${m[2]}`);
+          if (opts2.length >= 2) logEntry("ODPOWIEDZ-LISTA", cfg.id, JSON.stringify({ detectedOptions: opts2, hint: "user może odpowiedzieć numerem 1-N" }, null, 2));
+        }
       }
       let fr: any = null;
       try { fr = await result.finishReason; } catch {}

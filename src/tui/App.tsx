@@ -4,6 +4,7 @@ import { runAgent, testConnection, type ToolDecision, type AccessDecision } from
 import { loadConfig, saveConfig } from "../core/config.js";
 import { countLOC, detectEnvs, formatDuration, estimateTokens } from "../utils/stats.js";
 import { setEnvKey, maskKey } from "../utils/env.js";
+import { logEntry } from "../utils/logger.js";
 import { listOllamaModels, ollamaIdSuggestion } from "../utils/ollama.js";
 
 export function App({ initialPrompt, initialModel }: { initialPrompt?: string; initialModel?: string }) {
@@ -463,6 +464,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
         const lastAi = [...messages].reverse().find((m) => m.role === "assistant");
         const opt = lastAi?.text.match(new RegExp(`^\\s*${n}[.)\\-]\\s*(.+)$`, "m"));
         effectivePrompt = opt ? `My choice is option ${n}: "${opt[1].trim()}". Continue.` : `My choice is option ${n} from your last list. Continue.`;
+        logEntry("WYBOR UZYTKOWNIKA", modelId, JSON.stringify({ raw: prompt, expanded: effectivePrompt, quotedFrom: opt?.[1]?.trim() ?? null }, null, 2));
       }
       setMessages((m) => [...m, { role: "user", text: prompt }]);
       setBusy(true); setLastErr(null);
