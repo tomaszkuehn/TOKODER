@@ -619,7 +619,14 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
         const { checkAccess } = await import("../utils/permissions.js");
         const autoOk = (name: string, a: any): boolean => {
           try {
-            if (name === "bash") return false;
+            if (name === "bash") {
+              if (a?.workdir && !checkAccess(a.workdir, "execute").ok) return false;
+              const cmd = String(a?.command ?? "");
+              if (/(^|[\s"'`(=;|&])\/[A-Za-z]/.test(cmd)) return false;
+              if (/\b[A-Za-z]:[\\\/]/.test(cmd)) return false;
+              if (/(~|\$HOME|%USERPROFILE%|\$env:USERPROFILE|\$env\.HOME|\\\\)/i.test(cmd)) return false;
+              return true;
+            }
             if (name === "grep" || name === "glob") return checkAccess(a?.path ?? a?.cwd ?? ".", "read").ok;
             if (name === "read") return checkAccess(a?.path ?? ".", "read").ok;
             if (name === "edit" || name === "write") return checkAccess(a?.path ?? ".", "write").ok;
