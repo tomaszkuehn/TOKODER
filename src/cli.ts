@@ -28,6 +28,7 @@ program
   .option("--all", "run prompt on all configured models in parallel")
   .option("--compare", "alias for --all with labeled output")
   .option("--no-tui", "plain stdout, no Ink")
+  .option("--timeout <seconds>", "agent timeout in seconds (default 300)", (v) => parseInt(v, 10))
   .action(async (promptParts: string[], opts) => {
     if (!promptParts.length) {
       const modelId = opts.model as string | undefined;
@@ -48,7 +49,7 @@ program
     }
     const modelId = opts.model as string | undefined;
     if (opts.tui === false) {
-      const out = await runAgentFull(prompt, { modelId });
+      const out = await runAgentFull(prompt, { modelId, timeoutMs: (opts.timeout as number | undefined) ? (opts.timeout as number) * 1000 : undefined });
       console.log(out);
       return;
     }

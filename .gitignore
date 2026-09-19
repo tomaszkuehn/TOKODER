@@ -11,3 +11,5 @@ coverage/
 out/
 .vscode/
 .idea/
+nul
+scraper-app/
