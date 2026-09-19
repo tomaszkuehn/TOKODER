@@ -63,6 +63,8 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
     : [{ role: "user", content: prompt }];
   let sawText = false;
   const stepText: string[] = [];
+  let lastHadTools = false;
+  let nudged = false;
   try {
     for (let step = 0; step < maxSteps; step++) {
       logEntry("TO-MODEL", cfg.id, JSON.stringify({ step, messages: msgs }, null, 2));
@@ -81,6 +83,7 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
       }
       const pendingCalls: { toolCallId: string; toolName: string; input: any }[] = [];
       stepText.length = 0;
+      lastHadTools = false;
       try {
         for await (const part of result.fullStream as AsyncIterable<any>) {
           if (part.type === "text-delta") {
@@ -125,7 +128,20 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
         const usage: any = await result.usage;
         if (usage && onUsage) onUsage({ inputTokens: usage.inputTokens ?? 0, outputTokens: usage.outputTokens ?? 0, totalTokens: usage.totalTokens ?? 0 });
       } catch {}
-      if (!pendingCalls.length || fr === "length") break;
+      if (!pendingCalls.length || fr === "length") {
+        if (!pendingCalls.length && !stepText.length && lastHadTools && !nudged) {
+          nudged = true;
+          yield "\n[no final summary from model — nudging to finish]";
+          msgs.push({ role: "assistant", content: [{ type: "text", text: "(no text)" }] });
+          msgs.push({
+            role: "user",
+            content: "[system] The previous turn ended with tool calls but no final text. The tools already ran. Reply with a SHORT final summary now (what was done, files touched, how to verify). Do not call any tools unless something failed.",
+          });
+          logEntry("NUDGE", cfg.id, "empty final response after tool step — retrying once with continuation prompt");
+          continue;
+        }
+        break;
+      }
       msgs.push({ role: "assistant", content: pendingCalls.map((c) => ({ type: "tool-call", toolCallId: c.toolCallId, toolName: c.toolName, input: c.input })) });
       const results: any[] = [];
       for (const c of pendingCalls) {
@@ -161,6 +177,7 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
       }
       msgs.push({ role: "tool", content: results });
       restartTimer();
+      lastHadTools = true;
     }
   } finally {
     clearTimeout(timeout);
