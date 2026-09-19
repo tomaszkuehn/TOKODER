@@ -98,7 +98,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
     setModelId(next.id);
   };
 
-  const COMMANDS = ["exit", "quit", "q", "compact", "clear", "models", "help"] as const;
+  const COMMANDS = ["exit", "quit", "q", "compact", "clear", "models", "help", "allow", "deny"] as const;
   const MODEL_SUBS = ["add", "rm", "default", "key", "test", "set"] as const;
 
   const getSuggestion = (raw: string): string | null => {
@@ -163,6 +163,16 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
     const c = parts[0]?.toLowerCase() ?? "";
     const args = parts.slice(1);
     if (["exit", "quit", "q", "x", "wq"].includes(c)) { exit(); return true; }
+    if (["allow", "permit"].includes(c)) {
+      const p = args.join(" ").trim();
+      if (!p) { const { listAllowed, getProjectRoot } = await import("../utils/permissions.js"); pushSystem(`Allowed outside: ${(listAllowed().join(", ") || "— none")}\nProject: ${getProjectRoot()}\nUsage: :allow <path>`); return true; }
+      const { allowPath } = await import("../utils/permissions.js"); const abs = allowPath(p); pushSystem(`Allowed: ${abs}`); return true;
+    }
+    if (["deny", "forbid", "revoke"].includes(c)) {
+      const p = args.join(" ").trim();
+      if (!p) { pushSystem("Usage: :deny <path>"); return true; }
+      const { denyPath } = await import("../utils/permissions.js"); const ok = denyPath(p); pushSystem(ok ? `Revoked: ${p}` : `Not in allowlist: ${p}`); return true;
+    }
     if (["compact", "clear", "compress"].includes(c)) {
       if (messages.length <= 2) pushSystem("Nothing to compact.");
       else {
@@ -233,7 +243,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       }
       pushSystem(`Unknown subcommand "${sub}". Try :models`); return true;
     }
-    if (["help", "h", "?"].includes(c)) { pushSystem(`Commands:\n:exit / :q — exit\n:compact — compact\n:models — list\n:models test <id>\n:models key <id> <KEY>\nPgUp/PgDn scroll`); return true; }
+    if (["help", "h", "?"].includes(c)) { pushSystem(`Commands:\n:exit / :q — exit\n:compact — compact\n:models — list\n:models test <id>\n:models key <id> <KEY>\n:allow <path> / :deny <path> — sandbox\nPgUp/PgDn scroll`); return true; }
     pushSystem(`Unknown command ":${c}". Try :help`); return true;
   };
 

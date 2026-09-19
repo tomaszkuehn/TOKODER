@@ -1,6 +1,7 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { z } from "zod";
+import { isAllowed, getProjectRoot } from "../utils/permissions.js";
 
 const execAsync = promisify(exec);
 
@@ -11,6 +12,10 @@ export const bashSchema = z.object({
 });
 
 export async function bashTool({ command, workdir, timeout }: z.infer<typeof bashSchema>) {
+  if (workdir && !isAllowed(workdir)) return `Error: DENIED workdir outside project "${getProjectRoot()}": ${workdir} — :allow ${workdir}`;
+  if (/(?:\.\.\/|\.\.\\|[A-Z]:\\|\/tmp\/|\/home\/)/i.test(command) && /[<>|]/.test(command)) {
+    // heuristic for suspicious redirections outside project
+  }
   try {
     const { stdout, stderr } = await execAsync(command, {
       cwd: workdir ?? process.cwd(),

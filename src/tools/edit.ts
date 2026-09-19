@@ -1,5 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { z } from "zod";
+import { guard } from "../utils/permissions.js";
 
 export const editSchema = z.object({
   path: z.string(),
@@ -9,6 +10,8 @@ export const editSchema = z.object({
 });
 
 export async function editTool({ path, oldString, newString, replaceAll }: z.infer<typeof editSchema>) {
+  const block = guard(path);
+  if (block) return `Error: ${block}`;
   try {
     const content = await readFile(path, "utf-8");
     if (!content.includes(oldString)) return `Error: oldString not found in ${path}`;

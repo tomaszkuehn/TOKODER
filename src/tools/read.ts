@@ -1,5 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { z } from "zod";
+import { isAllowed, getProjectRoot } from "../utils/permissions.js";
 
 export const readSchema = z.object({
   path: z.string().describe("Absolute or relative path to file"),
@@ -8,6 +9,7 @@ export const readSchema = z.object({
 });
 
 export async function readTool({ path, offset, limit }: z.infer<typeof readSchema>) {
+  if (!isAllowed(path)) return `Error: DENIED read outside project "${getProjectRoot()}": ${path} — :allow ${path} to permit`;
   try {
     const s = await stat(path);
     if (s.isDirectory()) {
