@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef, useMemo } from "react";
 import { Box, Text, useInput, useApp, useStdout } from "ink";
-import { runAgent, testConnection, type ToolDecision } from "../core/agent.js";
+import { runAgent, testConnection, type ToolDecision, type AccessDecision } from "../core/agent.js";
 import { loadConfig, saveConfig } from "../core/config.js";
 import { countLOC, detectEnvs, formatDuration, estimateTokens } from "../utils/stats.js";
 import { setEnvKey, maskKey } from "../utils/env.js";
@@ -19,8 +19,10 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
   const draftRef = useRef("");
   const [busy, setBusy] = useState(false);
   const [pendingTool, setPendingTool] = useState<{ name: string; args: any } | null>(null);
+  const [pendingAccess, setPendingAccess] = useState<{ tool: string; mode: string; target: string } | null>(null);
+  const accessRef = useRef<((d: AccessDecision) => void) | null>(null);
   const [wizard, setWizard] = useState<null | {
-    step: "kind" | "key" | "model" | "id" | "rm";
+    step: "kind" | "key" | "model" | "id" | "rm" | "rm-confirm";
     kind?: "local" | "cloud";
     models?: string[];
     model?: string;
@@ -52,6 +54,18 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
     setCfg(c);
     return c;
   };
+
+  const cfgRef = useRef(cfg);
+  useEffect(() => { cfgRef.current = cfg; }, [cfg]);
+  useEffect(() => {
+    const id = setInterval(() => {
+      try {
+        const c = loadConfig();
+        if (JSON.stringify(c) !== JSON.stringify(cfgRef.current)) setCfg(c);
+      } catch {}
+    }, 1000);
+    return () => clearInterval(id);
+  }, []);
 
   useEffect(() => {
     countLOC().then(setLoc);
@@ -145,7 +159,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
     setModelId(next.id);
   };
 
-  const COMMANDS = ["exit", "quit", "q", "compact", "clear", "models", "help", "allow", "deny"] as const;
+  const COMMANDS = ["exit", "quit", "q", "compact", "clear", "models", "key", "help", "allow", "deny"] as const;
   const MODEL_SUBS = ["add", "rm", "default", "key", "test", "set"] as const;
 
   const getSuggestion = (raw: string): string | null => {
@@ -211,9 +225,10 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
     const args = parts.slice(1);
     if (["exit", "quit", "q", "x", "wq"].includes(c)) { exit(); return true; }
     if (["allow", "permit"].includes(c)) {
-      const p = args.join(" ").trim();
-      if (!p) { const { listAllowed, getProjectRoot } = await import("../utils/permissions.js"); pushSystem(`Allowed outside: ${(listAllowed().join(", ") || "— none")}\nProject: ${getProjectRoot()}\nUsage: :allow <path>`); return true; }
-      const { allowPath } = await import("../utils/permissions.js"); const abs = allowPath(p); pushSystem(`Allowed: ${abs}`); return true;
+      const p = args[0];
+      const mode = (["read", "write", "execute"].includes(args[1]) ? args[1] : "write") as any;
+      if (!p) { const { listAllowed, getProjectRoot, rulesPath } = await import("../utils/permissions.js"); pushSystem(`Allowed outside: ${(listAllowed().join(", ") || "— none")}\nProject: ${getProjectRoot()}\nRules: ${rulesPath()}\nUsage: :allow <path> [read|write|execute]`); return true; }
+      const { allowPath } = await import("../utils/permissions.js"); const abs = allowPath(p, mode); pushSystem(`Allowed (${mode}): ${abs}`); return true;
     }
     if (["deny", "forbid", "revoke"].includes(c)) {
       const p = args.join(" ").trim();
@@ -288,7 +303,24 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       }
       pushSystem(`Unknown subcommand "${sub}". Try :models`); return true;
     }
-    if (["help", "h", "?"].includes(c)) { pushSystem(`Commands:\n:exit / :q — exit\n:compact — compact\n:models — list\n:models test <id>\n:models key <id> <KEY>\n:allow <path> / :deny <path> — sandbox\nPgUp/PgDn scroll`); return true; }
+    if (["key", "apikey"].includes(c)) { setWizard({ step: "key" }); return true; }
+    if (["acl", "access"].includes(c)) {
+      const { loadRules, listAllowed, rulesPath } = await import("../utils/permissions.js");
+      const r = loadRules();
+      pushSystem(`ZASADY DOSTĘPU (poza projektem) — ${rulesPath()}\nGlobalnie: read=${r.read ? "TAK" : "NIE"}, write=${r.write ? "TAK" : "NIE"}, execute=${r.execute ? "TAK" : "NIE"}\n\nReguły per-ścieżka:\n${listAllowed().join("\n") || "— brak —"}\n\nZmiana: :acl set <read|write|execute> <tak|nie>\nDodaj: :allow <path> [read|write|execute]  •  Usuń: :deny <path>`);
+      return true;
+    }
+    if (c === "aclset") {
+      const [field, val] = args;
+      if (!field || !val || !["read", "write", "execute"].includes(field) || !["tak", "nie", "yes", "no"].includes(val.toLowerCase())) { pushSystem("Usage: :acl set <read|write|execute> <tak|nie>"); return true; }
+      const mod = await import("../utils/permissions.js");
+      const r = mod.loadRules();
+      (r as any)[field] = ["tak", "yes"].includes(val.toLowerCase());
+      mod.saveRules();
+      pushSystem(`✓ ${field} = ${(r as any)[field] ? "TAK" : "NIE"} (zapisane między sesjami)`);
+      return true;
+    }
+    if (["help", "h", "?"].includes(c)) { pushSystem(`Commands:\n:exit / :q — exit\n:compact — compact\n:key — set Ollama Cloud API key\n:models — list\n:models add — interactive wizard\n:models rm — interactive remove\n:models test <id>\n:allow <path> / :deny <path> — sandbox\nPgUp/PgDn scroll`); return true; }
     pushSystem(`Unknown command ":${c}". Try :help`); return true;
   };
 
@@ -304,7 +336,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
     if (w.step === "kind") return "DODAWANIE MODELU — 1: Ollama lokalny (localhost:11434), 2: Ollama Cloud (ollama.com)";
     if (w.step === "key") {
       const has = process.env.OLLAMA_API_KEY;
-      return `KLUCZ API dla Ollama Cloud${has ? ` (jest ${maskKey(has)} — Enter = zostaw)` : " (brak — wklej klucz z ollama.com/settings/keys, Enter = pomiń)"}`;
+      return `KLUCZ API dla Ollama Cloud${has ? ` (jest ${maskKey(has)} — wpisz nowy aby nadpisać, Enter = zostaw)` : " (wklej klucz z ollama.com/settings/keys)"}`;
     }
     if (w.step === "model") return `Wybierz model — numer z listy lub wpisz nazwę ręcznie (${w.models?.length ?? 0} znalezionych, "n" = własna nazwa)`;
     if (w.step === "rm") return w.rmId === undefined ? "Wpisz numer lub ID modelu do usunięcia" : `Potwierdź usunięcie "${w.rmId}" — t/n`;
@@ -318,7 +350,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
     if (w.step === "kind") {
       if (v !== "1" && v !== "2") { pushSystem("Wpisz 1 (lokalny) lub 2 (cloud)."); return; }
       const kind = v === "1" ? "local" as const : "cloud" as const;
-      if (kind === "cloud") { setWizard({ ...w, step: "key", kind }); return; }
+      if (kind === "cloud" && !process.env.OLLAMA_API_KEY) { setWizard(null); pushError("Ollama Cloud wymaga klucza API. Najpierw uruchom :key (lub :models key <id> <KEY>), potem :models add."); return; }
       setWizard({ ...w, step: "model", kind, models: [] });
       try {
         const models = (await listOllamaModels(kind)).map((m) => m.name);
@@ -331,17 +363,10 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       return;
     }
     if (w.step === "key") {
-      if (v && !v.startsWith(":")) setEnvKey("OLLAMA_API_KEY", v);
-      pushSystem(v ? `Klucz zapisany do .env → OLLAMA_API_KEY (${maskKey(v)})` : "Pominięto klucz (ustawisz później: :models key <id> <KEY>).");
-      setWizard({ ...w, step: "model", models: [] });
-      try {
-        const models = (await listOllamaModels("cloud")).map((m) => m.name);
-        setWizard({ step: "model", kind: "cloud", models });
-        pushSystem(`Ollama Cloud — dostępne modele:\n${models.map((m, i) => `${String(i + 1).padStart(2)}. ${m}`).join("\n")}\n\nWpisz numer, nazwę modelu lub "n" (własna).`);
-      } catch (e: any) {
-        setWizard(null);
-        pushError(`Nie udało się pobrać listy modeli: ${e.message}`);
-      }
+      if (!v || v.startsWith(":")) { pushSystem("Podaj klucz (anuluj: :q)."); return; }
+      setEnvKey("OLLAMA_API_KEY", v);
+      setWizard(null);
+      pushSystem(`✓ Klucz zapisany do .env → OLLAMA_API_KEY (${maskKey(v)}). Teraz :models add → 2 (Ollama Cloud).`);
       return;
     }
     if (w.step === "model") {
@@ -398,6 +423,13 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
   };
 
   useInput(async (char, key) => {
+    if (accessRef.current) {
+      const c = char?.toLowerCase();
+      if (c === "p") { const r = accessRef.current; accessRef.current = null; setPendingAccess(null); r("allow-file"); }
+      else if (c === "f") { const r = accessRef.current; accessRef.current = null; setPendingAccess(null); r("allow-dir"); }
+      else if (c === "n" || key.escape) { const r = accessRef.current; accessRef.current = null; setPendingAccess(null); r("deny"); }
+      return;
+    }
     if (approvalRef.current) {
       const c = char?.toLowerCase();
       if (c === "t" || c === "y" || key.return) { const r = approvalRef.current; approvalRef.current = null; setPendingTool(null); r("yes"); }
@@ -407,7 +439,8 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
     }
     if (key.pageUp) { setScroll((s) => Math.min(maxScroll, s + 5)); return; }
     if (key.pageDown) { setScroll((s) => Math.max(0, s - 5)); return; }
-    if (key.escape || (key.ctrl && char === "c")) exit();
+    if (key.escape) { setWizard(null); setHistIdx(-1); pushSystem("Anulowano (Esc — wyjście tylko przez :exit)."); return; }
+    if (key.ctrl && char === "c") exit();
     if (key.tab) {
       const sug = getSuggestion(input);
       if (input.startsWith(":") && sug) { setInput((s) => s + sug); return; }
@@ -433,8 +466,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       }
       setMessages((m) => [...m, { role: "user", text: prompt }]);
       setBusy(true); setLastErr(null);
-      bumpTokens(modelId, estimateTokens(prompt), 0);
-      let usageSeen = false;
+      let usageSent = false, usageRecv = false;
       let acc = ""; setMessages((m) => [...m, { role: "assistant", text: "" }]);
       const toolLog: string[] = [];
       const history = [...historyRef.current];
@@ -444,9 +476,12 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
             if (alwaysRef.current.has(name)) return "always";
             return await new Promise<ToolDecision>((resolve) => { approvalRef.current = resolve; setPendingTool({ name, args }); });
           },
+          onAccessRequest: async (tool, _args, mode, target) => {
+            return await new Promise<AccessDecision>((resolve) => { accessRef.current = resolve; setPendingAccess({ tool, mode, target }); });
+          },
           onToolCall: (n, a) => { const line = `→ ${n} ${JSON.stringify(a).slice(0, 120)}`; toolLog.push(line); pushSystem(line); }, onToolResult: (n, r) => { pushSystem(`← ${n}: ${r.slice(0, 120)}`); } }, (u) => {
-          usageSeen = true;
-          bumpTokens(modelId, u.inputTokens, u.outputTokens);
+          if (u.inputTokens > 0) { usageSent = true; bumpTokens(modelId, u.inputTokens, 0); }
+          if (u.outputTokens > 0) { usageRecv = true; bumpTokens(modelId, 0, u.outputTokens); }
         })) {
           acc += chunk;
           setMessages((m) => {
@@ -456,7 +491,9 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
         if (!acc.trim()) {
           if (toolLog.length) { acc = `[done — tools: ${toolLog.join(", ")}]`; setMessages((m) => { const c=[...m]; c[c.length-1]={role:"assistant", text:acc}; return c; }); }
           else pushError(`[${modelId}] empty — :models test ${modelId}`);
-        } else if (!usageSeen) bumpTokens(modelId, 0, estimateTokens(acc));
+        }
+        if (!usageSent) bumpTokens(modelId, estimateTokens(prompt), 0);
+        if (!usageRecv && acc.trim()) bumpTokens(modelId, 0, estimateTokens(acc));
         historyRef.current = [...history, { role: "user" as const, content: effectivePrompt }, { role: "assistant" as const, content: acc }].slice(-20);
       } catch (e: any) {
         pushError(e.message ?? String(e));
@@ -485,19 +522,33 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
   return (
     <Box flexDirection="column" width={cols} height={rows} paddingX={1}>
       <Box flexShrink={0} borderStyle="round" borderColor="cyan" paddingX={1} flexDirection="column">
-        <Box><Text bold color="cyan">tocoder</Text><Text dimColor> — :exit :compact :models | Tab model | PgUp/PgDn scroll</Text></Box>
+        <Box flexWrap="wrap" flexDirection="row">
+          <Text bold color="cyan">TOKODER</Text>
+          <Text> </Text>
+          <Text bold color="yellow" wrap="wrap">{process.cwd()}</Text>
+        </Box>
         <Box gap={1} flexWrap="wrap">
-          {cfg.models.map((m) => (
-            <Text key={m.id} color={m.id === modelId ? "green" : "gray"} bold={m.id === modelId}>{m.id === modelId ? "●" : "○"} {m.id}</Text>
-          ))}
+          {cfg.models.map((m) => {
+            const t = tokenStats[m.id] ?? { sent: 0, recv: 0 };
+            const fmt = (n: number) => (n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n));
+            return <Text key={m.id} color={m.id === modelId ? "green" : "gray"} bold={m.id === modelId}>{m.id === modelId ? "●" : "○"} {m.id} ({fmt(t.sent)}↑/{fmt(t.recv)}↓)</Text>;
+          })}
         </Box>
       </Box>
 
       <Box flexShrink={0} borderStyle="round" borderColor={lastErr ? "red" : "yellow"} marginTop={1} paddingX={1} flexDirection="column">
         <Text bold color={lastErr ? "red" : "yellow"}>● STATUS {lastErr ? "— ERROR" : ""}</Text>
-        <Text><Text color="cyan">Model: </Text><Text bold>{active.id}</Text><Text dimColor> ({active.provider}/{active.model})</Text><Text>  │  </Text><Text color="green">↑ {curTok.sent.toLocaleString("pl-PL")}</Text><Text dimColor> sent</Text><Text> </Text><Text color="magenta">↓ {curTok.recv.toLocaleString("pl-PL")}</Text><Text dimColor> recv</Text>{usedModels.length > 1 && <Text dimColor>  (∑ {usedModels.length} models: ↑{totTok.sent.toLocaleString("pl-PL")} ↓{totTok.recv.toLocaleString("pl-PL")})</Text>}</Text>
-        <Text><Text color="cyan">LOC: </Text><Text>{loc === null ? "…" : loc.toLocaleString("pl-PL")}</Text><Text>  │  </Text><Text color="cyan">Czas: </Text><Text>{formatDuration(elapsed)}</Text><Text>  │  </Text><Text color="cyan">Env: </Text>{envs.map((e, i) => <Text key={e.label} color={e.ok ? "green" : "gray"}>{i ? " " : ""}{e.ok ? "✓" : "✗"}{e.label}</Text>)}</Text>
-        {lastErr && <Text color="red">✗ {lastErr}</Text>}
+        <Box flexWrap="wrap" flexDirection="row" columnGap={2}>
+          <Text><Text color="cyan">Model: </Text><Text bold>{active.id}</Text><Text dimColor> ({active.provider}/{active.model})</Text></Text>
+          <Text><Text color="green">↑ {curTok.sent.toLocaleString("pl-PL")}</Text><Text dimColor> sent</Text><Text> </Text><Text color="magenta">↓ {curTok.recv.toLocaleString("pl-PL")}</Text><Text dimColor> recv</Text></Text>
+          {usedModels.length > 1 && <Text dimColor>(∑ {usedModels.length} models: ↑{totTok.sent.toLocaleString("pl-PL")} ↓{totTok.recv.toLocaleString("pl-PL")})</Text>}
+        </Box>
+        <Box flexWrap="wrap" flexDirection="row" columnGap={2}>
+          <Text><Text color="cyan">LOC: </Text><Text>{loc === null ? "…" : loc.toLocaleString("pl-PL")}</Text></Text>
+          <Text><Text color="cyan">Czas: </Text><Text>{formatDuration(elapsed)}</Text></Text>
+          <Text><Text color="cyan">Env: </Text>{envs.map((e, i) => <Text key={e.label} color={e.ok ? "green" : "gray"}>{i ? " " : ""}{e.ok ? "✓" : "✗"}{e.label}</Text>)}</Text>
+        </Box>
+        {lastErr && <Text color="red" wrap="wrap">✗ {lastErr}</Text>}
       </Box>
 
       <Box flexGrow={1} flexShrink={1} flexDirection="column" overflow="hidden" borderStyle="round" borderColor="green" marginTop={1} paddingX={1} height={outputH}>
@@ -526,7 +577,14 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
           {!wizard && <Text backgroundColor={busy ? undefined : isCmd ? "yellow" : "white"} color={isCmd ? "black" : "white"}> </Text>}
         </Box>
         {wizard && <Text dimColor wrap="wrap">→ {input || "(wpisz odpowiedź)"} ▌   (:q przerywa)</Text>}
-        {pendingTool && (
+        {pendingAccess && (
+          <Box flexDirection="column">
+            <Text color="red" bold>🔒 DOSTĘP POZA PROJEKT ({pendingAccess.mode})</Text>
+            <Text wrap="truncate">{pendingAccess.target}</Text>
+            <Text bold color="yellow">[P]lik  [F]folder nadrzędny  [N]ie</Text>
+          </Box>
+        )}
+        {pendingTool && !pendingAccess && (
           <Box flexDirection="column">
             <Text color="cyan" bold>⚡ Tool: {pendingTool.name}</Text>
             <Text dimColor wrap="truncate">{JSON.stringify(pendingTool.args).slice(0, innerW - 2)}</Text>

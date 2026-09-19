@@ -1,6 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { z } from "zod";
-import { isAllowed, getProjectRoot } from "../utils/permissions.js";
+import { checkAccess, getProjectRoot } from "../utils/permissions.js";
 
 export const readSchema = z.object({
   path: z.string().describe("Absolute or relative path to file"),
@@ -9,7 +9,10 @@ export const readSchema = z.object({
 });
 
 export async function readTool({ path, offset, limit }: z.infer<typeof readSchema>) {
-  if (!isAllowed(path)) return `Error: DENIED read outside project "${getProjectRoot()}": ${path} — :allow ${path} to permit`;
+  const chk = checkAccess(path, "read");
+  if (!chk.ok) return chk.reason === "system"
+    ? `Error: DENIED — "${path}" is inside Windows system folder.`
+    : `Error: PENDING-APPROVAL read outside project "${getProjectRoot()}": ${path} (read default: TAK via rules; ask user or :acl)`;
   try {
     const s = await stat(path);
     if (s.isDirectory()) {

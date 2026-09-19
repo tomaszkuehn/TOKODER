@@ -1,7 +1,7 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { z } from "zod";
-import { isAllowed, getProjectRoot } from "../utils/permissions.js";
+import { checkAccess, getProjectRoot } from "../utils/permissions.js";
 
 const execAsync = promisify(exec);
 
@@ -28,7 +28,12 @@ function isLinuxish(cmd: string): boolean {
 }
 
 export async function bashTool({ command, workdir, timeout }: z.infer<typeof bashSchema>) {
-  if (workdir && !isAllowed(workdir)) return `Error: DENIED workdir outside project "${getProjectRoot()}": ${workdir} — :allow ${workdir}`;
+  if (workdir) {
+    const chk = checkAccess(workdir, "execute");
+    if (!chk.ok) return chk.reason === "system"
+      ? `Error: DENIED — workdir "${workdir}" is inside Windows system folder.`
+      : `Error: PENDING-APPROVAL execute workdir outside project "${getProjectRoot()}": ${workdir}`;
+  }
   let cmd = command;
   let cwd = workdir ?? process.cwd();
   const onWin = process.platform === "win32";

@@ -49,8 +49,10 @@ program
     }
     const modelId = opts.model as string | undefined;
     if (opts.tui === false) {
-      const out = await runAgentFull(prompt, { modelId, timeoutMs: (opts.timeout as number | undefined) ? (opts.timeout as number) * 1000 : undefined });
+      let sent = 0, recv = 0;
+      const out = await runAgentFull(prompt, { modelId, timeoutMs: (opts.timeout as number | undefined) ? (opts.timeout as number) * 1000 : undefined }, (u) => { sent += u.inputTokens; recv += u.outputTokens; });
       console.log(out);
+      console.error(`\n[tokens] ↑ ${sent} sent  ↓ ${recv} recv`);
       return;
     }
     const inst = render(React.createElement(App, { initialPrompt: prompt, initialModel: modelId }), { exitOnCtrlC: false });

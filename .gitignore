@@ -13,3 +13,4 @@ out/
 .idea/
 nul
 scraper-app/
+access-rules.json

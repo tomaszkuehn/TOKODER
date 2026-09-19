@@ -6,13 +6,14 @@ AI coding agent for the terminal — clone of [opencode](https://github.com/anom
 
 - **Agent loop** with tool calling (`read`, `write`, `edit`, `bash`, `glob`, `grep`) — manual multi-step loop (`stepCountIs`), 300s timeout per step, typed errors, always replies even if text empty
 - **Tool approval** — every tool call asks `[T]ak / [N]ie / [A]zawsze` (A whitelists tool for the session); denied calls report back to the model
-- **Multi-model** — 3+ models simultaneously via `tokoder.config.json` (Anthropic / OpenAI / OpenRouter / Ollama)
-- **Per-model token counters** — `↑ sent ↓ recv` for the active model + `∑` total, counted until app exit (`:compact` keeps them); real `usage` from provider, `len/4` fallback
-- **3-panel TUI** — fixed header/status/input (`flexShrink:0`), auto-scrolling output with scrollbar (`PgUp`/`PgDn` pauses, PgDn returns to bottom), editable `↑`/`↓` command history (incl. commands), alt buffer with sync transcript dump (`TOCODER_ALT_SCREEN=0` disables)
-- **Vim-style commands** — `:exit` `:compact` `:models` `:allow`/`:deny` with ghost autocomplete (`Tab`/`Enter` completes)
-- **Sandbox** — blocks writes/reads outside `cwd` unless `:allow <path>`, `SYSTEM` guard
+- **ACL sandbox** — full access inside `cwd`; outside: Windows system folders always denied, per-mode rules (read/write/execute) persisted across sessions in `~/.config/tokoder/access-rules.json`; on first access outside rules the app asks `[P]lik / [F]folder / [N]ie` and auto-retries the tool. Manage with `:acl`, `:acl set <mode> <tak|nie>`, `:allow <path> [read|write|execute]`, `:deny <path>`
+- **Multi-model** — models via `tokoder.config.json` (Anthropic / OpenAI / OpenRouter / Ollama local + Ollama Cloud)
+- **Interactive `:models add` wizard** — local/cloud Ollama with live model listing (`/api/tags`), auto-suggested free id (overridable); cloud requires key set first via `:key`
+- **Per-model token counters** — `id (1.1k↑/3.4k↓)` next to every model in header (0↑/0↓ when unused), `↑ sent ↓ recv` for active model + `∑` total, counted until app exit; real `usage` from provider per agent step, `len/4` fallback
+- **3-panel TUI** — fixed header/status/input (`flexShrink:0`), auto-scrolling output with scrollbar (`PgUp`/`PgDn` pauses, PgDn returns to bottom), editable `↑`/`↓` command history (incl. commands), wrap-aware flex status panel (responsive on narrow terminals), alt buffer with sync transcript dump (`TOCODER_ALT_SCREEN=0` disables), cwd shown in header, Esc cancels (exit only via `:exit`)
+- **Vim-style commands** — `:exit` `:compact` `:key` `:models` `:acl` `:allow`/`:deny` with ghost autocomplete (`Tab`/`Enter` completes)
 - **Chat history** — keeps 20 turns, `1`-`9` auto-expands quoting the actual option text from the model's list
-- **CLI** — `tocoder` (also `tokoder` alias), `models`, `--all` parallel compare, `--no-tui`, `--timeout <seconds>`
+- **CLI** — `tocoder` (also `tokoder` alias), `models`, `--all` parallel compare, `--no-tui` (prints `[tokens] ↑ ↓`), `--timeout <seconds>`
 - **Diagnostics** — `:models test <id>` checks Ollama `/api/tags` / `/v1/models`, shows `ECONNREFUSED`/`401`/`404` instead of silent hang; `TOCODER_DEBUG=1` logs per-step `finishReason`
 - **WSL + Android Studio** aware — env detection in status bar, Linux-style commands auto-routed to `wsl bash`
 
@@ -83,8 +84,9 @@ TOCODER_DEBUG=1 tocoder          # per-step finishReason diagnostics
 # PgUp/PgDn        scroll output (auto-scroll pauses; PgDn returns to bottom)
 # ↑/↓              previous prompts & commands — editable (Backspace works)
 # T / N / A        approve / deny / always-allow pending tool call
+# P / F / N        grant access outside project: file / parent dir / deny
 # Enter            send (prefix :comp → :compact auto-completes)
-# Esc / Ctrl+C     exit (transcript stays in scrollback)
+# Esc              cancel wizard / prompt (exit only via :exit or Ctrl+C)
 
 # scripts (Windows / WSL)
 powershell -ExecutionPolicy Bypass -File scripts/tocoder.ps1 "prompt" -Model gpt-4o -All -NoTui
@@ -98,39 +100,57 @@ scripts/tocoder.bat "prompt"
 |---------|--------|
 | `:exit`, `:q`, `:quit` | exit (transcript dumped) |
 | `:compact` | keep last 2 messages (token counters preserved) |
+| `:key` | interactive Ollama Cloud API key setup |
 | `:models` | list models |
 | `:models <id>` | switch model |
-| `:models add <id> <provider> <model> [baseURL]` | add model to `tokoder.config.json` |
-| `:models rm <id>` | remove |
+| `:models add` | **interactive wizard** — local/cloud Ollama, live model list, auto id |
+| `:models add <id> <provider> <model> [baseURL]` | manual add |
+| `:models rm` | **interactive remove** — pick from list, `t/n` confirm |
 | `:models default <id>` | set default |
 | `:models key <id> <API_KEY>` | save to `.env` |
 | `:models test [id]` | diagnose connection (`/api/tags`) |
 | `:models set <id> <field> <value>` | edit field |
-| `:allow <path>` | permit outside `cwd` |
+| `:acl` | show access rules + path to rules file |
+| `:acl set <read\|write\|execute> <tak\|nie>` | toggle global outside-access default |
+| `:allow <path> [read\|write\|execute]` | permit path outside `cwd` |
 | `:deny <path>` | revoke |
 | `:help` | help |
 
 Typing `:` shows ghost hint when prefix is unambiguous — `Enter` executes, `Tab` completes (e.g. `:comp` → `:compact`).
 
+## Access Control (ACL)
+
+- **Inside `cwd`**: always full access (read/write/execute).
+- **Outside `cwd`**:
+  - Windows system folders (`C:\Windows`, `Program Files`, `ProgramData`) — never accessible
+  - Global defaults: `read=TAK`, `write=NIE`, `execute=NIE`
+  - Per-path exceptions with mode (`r:`/`w:`/`x:`)
+- When a tool hits a path outside rules, the app asks: `[P]lik` (this file only), `[F]folder nadrzędny` (parent dir), `[N]ie` — then auto-retries the tool call.
+- All rules persist across sessions in `%USERPROFILE%\.config\tokoder\access-rules.json`.
+
 ## TUI Layout
 
 ```
-┌─ tocoder ─ Tab cycle ─────────────────────┐
-│ ● claude-sonnet ○ gpt-4o ○ gemini-flash   │
-├─ STATUS ──────────────────────────────────┤
-│ Model: claude-sonnet (...) │ ↑ 1,234 ↓ 567│  ← per-model + ∑ total
-│ LOC: 2,069 │ Time: 00:05:23 │ Env: ✓WSL ✓Android ✓Node │
-├─ AI RESPONSE (auto-scroll + scrollbar) ───┤
-│ ● AI: ...                              █  │  ← PgUp/PgDn pauses
-├─ INPUT ───────────────────────────────────┤
-│ › your command ▌  (or :exit with hint)    │
-│ ⚡ Tool: bash {"command":"g++ ..."}        │  ← pending approval
-│ [T]ak  [N]ie  [A]zawsze dla bash          │
-└───────────────────────────────────────────┘
+┌─ TOKODER — D:\projects\app ────────────────┐
+│ ● claude-sonnet (1.1k↑/3.4k↓) ○ gpt-4o (0↑/0↓) │  ← per-model tokens (1k precision)
+├─ STATUS ───────────────────────────────────┤
+│ Model: claude-sonnet (...)  ↑ 1,234 sent ↓ 567 recv │  ← wraps on narrow terminals
+│ LOC: 2,069  Czas: 00:05:23  Env: ✓WSL ✓Android ✓Node │
+├─ AI RESPONSE (auto-scroll + scrollbar) ────┤
+│ ● AI: ...                               █  │  ← PgUp/PgDn pauses
+├─ INPUT ────────────────────────────────────┤
+│ › your command ▌                           │
+│ ⚡ Tool: bash {"command":"g++ ..."}         │  ← pending approval
+│ [T]ak  [N]ie  [A]zawsze dla bash           │
+│ 🔒 DOSTĘP POZA PROJEKT (write)             │  ← ACL prompt
+│    D:\outside\file.txt                     │
+│ [P]lik  [F]folder nadrzędny  [N]ie         │
+└────────────────────────────────────────────┘
 ```
 
-- **Header/Status/Input**: `flexShrink: 0` — never shrink
-- **Output**: flat line-viewport (wrap-aware), auto-follows bottom during streaming; scrollbar column `█/│` on the right; `scroll` offset from PgUp; PgDn returns to live bottom
+- **Header**: `TOKODER` + cwd (bold yellow), per-model token counters
+- **Status**: flex-wrap segments — on narrow terminals `Model:`/tokens/`LOC`/`Czas`/`Env` move whole to next line instead of breaking
+- **Output**: flat line-viewport (wrap-aware), auto-follows bottom during streaming; scrollbar column `█/│` on the right; PgDn returns to live bottom
 - **Input**: `flexWrap="wrap"`, `↑`/`↓` history `(n/N)` — editable without losing position, ghost `suggestion`
 - **LOC**: `src/utils/stats.ts` (ignores `node_modules`, `dist`, `.git`)
 - **Tokens**: per-model `usage` per agent step + `len/4` fallback; reset only on exit
@@ -147,7 +167,7 @@ Typing `:` shows ghost hint when prefix is unambiguous — `Enter` executes, `Ta
 
 **Choice `1`-`9` ignored** — now expands quoting the option text from the model's last list, with 20-turn history.
 
-**Builds outside folder** — blocked by `src/utils/permissions.ts` (`isInsideRoot`), `DENIED: outside project` → `:allow <path>` to permit.
+**Builds outside folder** — ACL: system folders always denied; outside rules → app asks `[P]lik/[F]folder/[N]ie` and auto-retries. Defaults `read=TAK, write=NIE, execute=NIE`; change via `:acl set <mode> <tak|nie>`, per-path `:allow <path> [mode]`. Rules live in `~/.config/tokoder/access-rules.json`.
 
 **Local model no response**
 
@@ -174,11 +194,12 @@ src/
     config.ts         # load/save tokoder.config.json
     providers.ts      # getModelFromConfig
   tools/              # read / write / edit / bash / glob / grep (guarded); agentTools (schemas) + executors
-  tui/App.tsx         # Ink 3-panel, vim, autocomplete, editable history, auto-scroll + scrollbar, tool approval, token stats
+  tui/App.tsx         # Ink 3-panel, vim, autocomplete, editable history, auto-scroll + scrollbar, tool approval + ACL prompt, per-model token stats, :models add/rm wizards
   utils/
     stats.ts          # LOC + env + duration
     env.ts            # .env set/mask
-    permissions.ts    # isInsideRoot, guard, allow/deny
+    ollama.ts         # listOllamaModels (local/cloud), id suggestion
+    permissions.ts    # checkAccess (ACL modes), rules persistence, guard, allow/deny
 scripts/
   tocoder.ps1 / .sh / .bat (and tokoder aliases)
 tokoder.config.json

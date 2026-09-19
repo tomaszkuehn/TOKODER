@@ -13,6 +13,8 @@ const SYSTEM = `You are tokoder, an AI coding agent like opencode/claude-code.
 
 export type ToolDecision = "yes" | "always" | "no";
 
+export type AccessDecision = "allow-file" | "allow-dir" | "deny";
+
 export type AgentOpts = {
   modelId?: string;
   modelConfig?: ModelConfig;
@@ -20,6 +22,7 @@ export type AgentOpts = {
   timeoutMs?: number;
   maxSteps?: number;
   onToolApproval?: (name: string, args: any) => Promise<ToolDecision>;
+  onAccessRequest?: (tool: string, args: any, mode: "read" | "write" | "execute", target: string) => Promise<AccessDecision>;
   onToolCall?: (name: string, args: any) => void;
   onToolResult?: (name: string, result: string) => void;
 };
@@ -110,6 +113,18 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
           try {
             const ex = executors[c.toolName];
             output = ex ? String(await ex(c.input)) : `Error: unknown tool "${c.toolName}"`;
+            if (output.includes("PENDING-APPROVAL") && opts.onAccessRequest) {
+              const target = String(c.input?.path ?? c.input?.workdir ?? c.input?.pattern ?? "?");
+              const mode: any = output.includes("read") ? "read" : output.includes("workdir") || output.includes("execute") ? "execute" : "write";
+              const decision = await opts.onAccessRequest(c.toolName, c.input, mode, target);
+              if (decision === "deny") {
+                output = `DENIED by user: access to "${target}" not granted. Ask the user how to proceed.`;
+              } else {
+                const { applyAskDecision } = await import("../utils/permissions.js");
+                applyAskDecision(target, mode, decision);
+                output = ex ? String(await ex(c.input)) : output;
+              }
+            }
           } catch (e: any) {
             output = `Error: ${e.message ?? String(e)}`;
           }
@@ -129,9 +144,9 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
   }
 }
 
-export async function runAgentFull(prompt: string, opts: AgentOpts = {}) {
+export async function runAgentFull(prompt: string, opts: AgentOpts = {}, onUsage?: (u: Usage) => void) {
   let out = "";
-  for await (const c of runAgent(prompt, opts)) out += c;
+  for await (const c of runAgent(prompt, opts, onUsage)) out += c;
   return out;
 }
 
