@@ -12,28 +12,58 @@ export type AgentOpts = {
   modelId?: string;
   modelConfig?: ModelConfig;
   cwd?: string;
+  timeoutMs?: number;
 };
 
 export type Usage = { inputTokens: number; outputTokens: number; totalTokens: number };
 
+export class AgentError extends Error {
+  code?: string;
+  constructor(message: string, code?: string) {
+    super(message);
+    this.code = code;
+  }
+}
+
 export async function* runAgent(prompt: string, opts: AgentOpts = {}, onUsage?: (u: Usage) => void) {
   const cfg = opts.modelConfig ?? resolveModel(opts.modelId);
   const mdl = getModelFromConfig(cfg);
-  const result = streamText({
-    model: mdl,
-    system: SYSTEM,
-    prompt,
-    tools,
-    maxSteps: 20,
-  } as any);
-  for await (const chunk of result.textStream) yield chunk;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), opts.timeoutMs ?? 60_000);
+  let result: any;
+  try {
+    result = streamText({
+      model: mdl,
+      system: SYSTEM,
+      prompt,
+      tools,
+      maxSteps: 20,
+      abortSignal: controller.signal,
+    } as any);
+  } catch (e: any) {
+    clearTimeout(timeout);
+    throw new AgentError(`[${cfg.id}] init failed: ${e.message} (check baseURL/model/key)`, e.code);
+  }
+  try {
+    for await (const chunk of result.textStream) yield chunk;
+  } catch (e: any) {
+    if (e.name === "AbortError") throw new AgentError(`[${cfg.id}] timeout after ${(opts.timeoutMs ?? 60000) / 1000}s — is ${cfg.baseURL ?? cfg.provider} reachable?`, "TIMEOUT");
+    const msg = e.message ?? String(e);
+    if (msg.includes("ECONNREFUSED") || msg.includes("Failed to fetch") || msg.includes("fetch failed"))
+      throw new AgentError(`[${cfg.id}] connection failed → ${cfg.baseURL ?? cfg.provider} not reachable. Is Ollama running? (ollama serve)`, "ECONNREFUSED");
+    if (msg.includes("401") || msg.includes("Unauthorized")) throw new AgentError(`[${cfg.id}] 401 Unauthorized — wrong API key (${cfg.apiKeyEnv})`, "401");
+    if (msg.includes("404")) throw new AgentError(`[${cfg.id}] 404 model "${cfg.model}" not found on ${cfg.baseURL ?? cfg.provider}`, "404");
+    throw new AgentError(`[${cfg.id}] ${msg}`, e.code);
+  } finally {
+    clearTimeout(timeout);
+  }
   try {
     const usage: any = await (result as any).usage;
-    if (usage && onUsage) onUsage({ inputTokens: usage.inputTokens ?? usage.promptTokens ?? 0, outputTokens: usage.outputTokens ?? usage.completionTokens ?? 0, totalTokens: usage.totalTokens ?? 0 });
+    if (usage && onUsage) onUsage({ inputTokens: usage.inputTokens ?? 0, outputTokens: usage.outputTokens ?? 0, totalTokens: usage.totalTokens ?? 0 });
   } catch {}
   try {
     const total: any = await (result as any).totalUsage;
-    if (total && onUsage) onUsage({ inputTokens: total.inputTokens ?? total.promptTokens ?? 0, outputTokens: total.outputTokens ?? total.completionTokens ?? 0, totalTokens: total.totalTokens ?? 0 });
+    if (total && onUsage) onUsage({ inputTokens: total.inputTokens ?? 0, outputTokens: total.outputTokens ?? 0, totalTokens: total.totalTokens ?? 0 });
   } catch {}
 }
 
@@ -41,6 +71,39 @@ export async function runAgentFull(prompt: string, opts: AgentOpts = {}) {
   let out = "";
   for await (const c of runAgent(prompt, opts)) out += c;
   return out;
+}
+
+export async function testConnection(cfg: ModelConfig, timeoutMs = 5000): Promise<{ ok: boolean; msg: string }> {
+  const base = cfg.baseURL ?? (cfg.provider === "ollama" ? "http://localhost:11434/v1" : "");
+  if (cfg.provider === "ollama" || base.includes("11434")) {
+    const url = base.replace("/v1", "") + "/api/tags";
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+      if (!res.ok) return { ok: false, msg: `HTTP ${res.status} ${res.statusText}` };
+      const j: any = await res.json();
+      const models = (j.models ?? []).map((m: any) => m.name);
+      if (models.length && !models.includes(cfg.model) && !models.some((n: string) => cfg.model.startsWith(n)))
+        return { ok: false, msg: `Connected but model "${cfg.model}" not found. Available: ${models.join(", ") || "—"}` };
+      return { ok: true, msg: `OK — ${models.length ? models.join(", ") : "no models listed"}` };
+    } catch (e: any) {
+      return { ok: false, msg: e.name === "TimeoutError" ? `timeout ${timeoutMs}ms → ${url}` : `${e.message} → ${url} (is ollama running?)` };
+    }
+  }
+  if (base) {
+    try {
+      const res = await fetch(`${base.replace(/\/$/, "")}/models`, {
+        headers: cfg.apiKeyEnv && process.env[cfg.apiKeyEnv] ? { Authorization: `Bearer ${process.env[cfg.apiKeyEnv]}` } : {},
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!res.ok) return { ok: false, msg: `HTTP ${res.status} ${res.statusText} → ${base}` };
+      return { ok: true, msg: `OK → ${base}` };
+    } catch (e: any) {
+      return { ok: false, msg: `${e.message} → ${base}` };
+    }
+  }
+  const key = cfg.apiKeyEnv ? process.env[cfg.apiKeyEnv] : "";
+  if (!key) return { ok: false, msg: `No API key for ${cfg.apiKeyEnv}` };
+  return { ok: true, msg: `Key present for ${cfg.apiKeyEnv}, no baseURL to test` };
 }
 
 export async function runParallel(prompt: string, modelIds: string[]): Promise<Record<string, string>> {

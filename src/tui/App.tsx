@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef } from "react";
 import { Box, Text, useInput, useApp, useStdout } from "ink";
-import { runAgent } from "../core/agent.js";
+import { runAgent, testConnection } from "../core/agent.js";
 import { loadConfig, saveConfig } from "../core/config.js";
 import { countLOC, detectEnvs, formatDuration, estimateTokens } from "../utils/stats.js";
 import { setEnvKey, maskKey } from "../utils/env.js";
@@ -11,12 +11,13 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
   const [cfg, setCfg] = useState(() => loadConfig());
   const [modelId, setModelId] = useState(initialModel ?? cfg.defaultModel);
   const [input, setInput] = useState(initialPrompt ?? "");
-  const [messages, setMessages] = useState<{ role: "user" | "assistant" | "system"; text: string }[]>([]);
+  const [messages, setMessages] = useState<{ role: "user" | "assistant" | "system" | "error"; text: string }[]>([]);
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(0);
   const [recv, setRecv] = useState(0);
   const [loc, setLoc] = useState<number | null>(null);
   const [elapsed, setElapsed] = useState(0);
+  const [lastErr, setLastErr] = useState<string | null>(null);
   const [envs] = useState(() => detectEnvs());
   const startRef = useRef(Date.now());
 
@@ -51,6 +52,10 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
   };
 
   const pushSystem = (text: string) => setMessages((m) => [...m, { role: "system", text }]);
+  const pushError = (text: string) => {
+    setLastErr(text);
+    setMessages((m) => [...m, { role: "error", text }]);
+  };
 
   const formatModels = (c = cfg) =>
     c.models
@@ -63,7 +68,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       })
       .join("\n");
 
-  const handleCommand = (raw: string): boolean => {
+  const handleCommand = async (raw: string): Promise<boolean> => {
     if (!raw.startsWith(":")) return false;
     const parts = raw.slice(1).trim().split(/\s+/);
     const c = parts[0]?.toLowerCase() ?? "";
@@ -87,10 +92,20 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       const sub = args[0]?.toLowerCase();
       const cur = reloadCfg();
       if (!sub) {
-        pushSystem(`MODELS (${cur.models.length}):\n${formatModels(cur)}\n\n:models <id> — switch\n:models add <id> <provider> <model> [baseURL]\n:models rm <id>\n:models default <id>\n:models key <id> <API_KEY>\n:models set <id> <field> <value>  (field: provider|model|baseURL|apiKeyEnv)`);
+        pushSystem(`MODELS (${cur.models.length}):\n${formatModels(cur)}\n\n:models <id> — switch\n:models add <id> <provider> <model> [baseURL]\n:models rm <id>\n:models default <id>\n:models key <id> <API_KEY>\n:models test <id>\n:models set <id> <field> <value>`);
         return true;
       }
-      if (!["add", "rm", "remove", "del", "default", "key", "set"].includes(sub) && cur.models.find((m) => m.id === sub)) {
+      if (sub === "test") {
+        const id = args[1] ?? modelId;
+        const m = cur.models.find((x) => x.id === id);
+        if (!m) { pushSystem(`Not found: ${id}`); return true; }
+        pushSystem(`Testing ${id} (${m.baseURL ?? m.provider})…`);
+        const res = await testConnection(m);
+        if (res.ok) pushSystem(`✓ ${id}: ${res.msg}`);
+        else pushError(`✗ ${id}: ${res.msg}`);
+        return true;
+      }
+      if (!["add", "rm", "remove", "del", "default", "key", "set", "test"].includes(sub) && cur.models.find((m) => m.id === sub)) {
         const found = cur.models.find((m) => m.id === sub)!;
         setModelId(found.id);
         pushSystem(`Switched to ${found.id} (${found.provider}/${found.model})`);
@@ -98,58 +113,38 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       }
       if (sub === "add") {
         const [id, provider, model, baseURL] = args.slice(1);
-        if (!id || !provider || !model) {
-          pushSystem("Usage: :models add <id> <provider> <model> [baseURL]\nProviders: anthropic|openai|openrouter|ollama");
-          return true;
-        }
-        if (!["anthropic", "openai", "openrouter", "ollama"].includes(provider)) {
-          pushSystem(`Invalid provider "${provider}"`);
-          return true;
-        }
-        if (cur.models.find((m) => m.id === id)) {
-          pushSystem(`Model "${id}" already exists`);
-          return true;
-        }
+        if (!id || !provider || !model) { pushSystem("Usage: :models add <id> <provider> <model> [baseURL]"); return true; }
+        if (!["anthropic", "openai", "openrouter", "ollama"].includes(provider)) { pushSystem(`Invalid provider "${provider}"`); return true; }
+        if (cur.models.find((m) => m.id === id)) { pushSystem(`Model "${id}" already exists`); return true; }
         const apiKeyEnv = provider === "anthropic" ? "ANTHROPIC_API_KEY" : provider === "openai" ? "OPENAI_API_KEY" : provider === "openrouter" ? "OPENROUTER_API_KEY" : undefined;
         cur.models.push({ id, provider: provider as any, model, apiKeyEnv, baseURL });
-        saveConfig(cur);
-        reloadCfg();
-        pushSystem(`Added ${id}. Now set key: :models key ${id} <API_KEY>`);
+        saveConfig(cur); reloadCfg();
+        pushSystem(`Added ${id}. Now: :models key ${id} <API_KEY>  and  :models test ${id}`);
         return true;
       }
       if (["rm", "remove", "del"].includes(sub)) {
-        const id = args[1];
-        if (!id) { pushSystem("Usage: :models rm <id>"); return true; }
+        const id = args[1]; if (!id) { pushSystem("Usage: :models rm <id>"); return true; }
         const idx = cur.models.findIndex((m) => m.id === id);
         if (idx === -1) { pushSystem(`Not found: ${id}`); return true; }
         cur.models.splice(idx, 1);
         if (cur.defaultModel === id) cur.defaultModel = cur.models[0]?.id ?? "";
         if (modelId === id) setModelId(cur.defaultModel);
-        saveConfig(cur);
-        reloadCfg();
-        pushSystem(`Removed ${id}`);
-        return true;
+        saveConfig(cur); reloadCfg(); pushSystem(`Removed ${id}`); return true;
       }
       if (sub === "default") {
         const id = args[1];
         if (!id || !cur.models.find((m) => m.id === id)) { pushSystem(`Usage: :models default <id> — available: ${cur.models.map((m) => m.id).join(", ")}`); return true; }
-        cur.defaultModel = id;
-        saveConfig(cur);
-        reloadCfg();
-        pushSystem(`Default set to ${id}`);
-        return true;
+        cur.defaultModel = id; saveConfig(cur); reloadCfg(); pushSystem(`Default set to ${id}`); return true;
       }
       if (sub === "key") {
-        const id = args[1];
-        const key = args.slice(2).join(" ");
+        const id = args[1]; const key = args.slice(2).join(" ");
         if (!id || !key) { pushSystem("Usage: :models key <id> <API_KEY>"); return true; }
         const m = cur.models.find((x) => x.id === id);
         if (!m) { pushSystem(`Not found: ${id}`); return true; }
         const envKey = m.apiKeyEnv ?? `${id.toUpperCase().replace(/-/g, "_")}_API_KEY`;
         if (!m.apiKeyEnv) { m.apiKeyEnv = envKey; saveConfig(cur); }
-        setEnvKey(envKey, key.trim());
-        reloadCfg();
-        pushSystem(`Key saved for ${id} → ${envKey} (${maskKey(key)}) in .env`);
+        setEnvKey(envKey, key.trim()); reloadCfg();
+        pushSystem(`Key saved for ${id} → ${envKey} (${maskKey(key)}) in .env — run :models test ${id}`);
         return true;
       }
       if (sub === "set") {
@@ -159,17 +154,13 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
         const m = cur.models.find((x) => x.id === id);
         if (!m) { pushSystem(`Not found: ${id}`); return true; }
         if (field === "provider" && !["anthropic", "openai", "openrouter", "ollama"].includes(value)) { pushSystem(`Invalid provider`); return true; }
-        (m as any)[field] = value;
-        saveConfig(cur);
-        reloadCfg();
-        pushSystem(`Updated ${id} ${field}=${value}`);
-        return true;
+        (m as any)[field] = value; saveConfig(cur); reloadCfg(); pushSystem(`Updated ${id} ${field}=${value}`); return true;
       }
       pushSystem(`Unknown subcommand "${sub}". Try :models`);
       return true;
     }
     if (["help", "h", "?"].includes(c)) {
-      pushSystem(`Commands:\n:exit / :q — exit\n:compact — compact history\n:models — list\n:models add <id> <provider> <model> [baseURL]\n:models key <id> <KEY> — save API key to .env\n:models rm/default/set — manage`);
+      pushSystem(`Commands:\n:exit / :q — exit\n:compact — compact history\n:models — list\n:models test <id> — diagnose local model\n:models key <id> <KEY>\n:models add/rm/default/set`);
       return true;
     }
     pushSystem(`Unknown command ":${c}". Try :help`);
@@ -182,26 +173,39 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
     if (key.return && !busy && input.trim()) {
       const prompt = input;
       setInput("");
-      if (handleCommand(prompt)) return;
+      if (await handleCommand(prompt)) return;
       setMessages((m) => [...m, { role: "user", text: prompt }]);
       setBusy(true);
+      setLastErr(null);
       setSent((s) => s + estimateTokens(prompt));
       let acc = "";
       setMessages((m) => [...m, { role: "assistant", text: "" }]);
-      for await (const chunk of runAgent(prompt, { modelId }, (u) => {
-        setSent((s) => s + u.inputTokens - estimateTokens(prompt));
-        setRecv((r) => r + u.outputTokens);
-      })) {
-        acc += chunk;
+      try {
+        for await (const chunk of runAgent(prompt, { modelId, timeoutMs: 60000 }, (u) => {
+          setSent((s) => s + u.inputTokens - estimateTokens(prompt));
+          setRecv((r) => r + u.outputTokens);
+        })) {
+          acc += chunk;
+          setMessages((m) => {
+            const copy = [...m];
+            copy[copy.length - 1] = { role: "assistant", text: acc };
+            return copy;
+          });
+        }
+        if (!acc) pushError(`[${modelId}] empty response — try :models test ${modelId} to diagnose`);
+        else setRecv((r) => r + estimateTokens(acc));
+      } catch (e: any) {
+        const msg = e.message ?? String(e);
+        pushError(msg);
         setMessages((m) => {
           const copy = [...m];
-          copy[copy.length - 1] = { role: "assistant", text: acc };
+          if (copy[copy.length - 1]?.role === "assistant" && !copy[copy.length - 1].text) copy.pop();
           return copy;
         });
+      } finally {
+        countLOC().then(setLoc);
+        setBusy(false);
       }
-      if (acc) setRecv((r) => r + estimateTokens(acc));
-      countLOC().then(setLoc);
-      setBusy(false);
     } else if (key.backspace || key.delete) setInput((s) => s.slice(0, -1));
     else if (!key.ctrl && !key.meta && char) setInput((s) => s + char);
   });
@@ -221,28 +225,29 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
         </Box>
       </Box>
 
-      <Box borderStyle="round" borderColor="yellow" marginTop={1} paddingX={1} flexDirection="column">
-        <Text bold color="yellow">● STATUS</Text>
+      <Box borderStyle="round" borderColor={lastErr ? "red" : "yellow"} marginTop={1} paddingX={1} flexDirection="column">
+        <Text bold color={lastErr ? "red" : "yellow"}>● STATUS {lastErr ? "— ERROR" : ""}</Text>
         <Text><Text color="cyan">Model: </Text><Text bold>{active.id}</Text><Text dimColor> ({active.provider}/{active.model})</Text><Text>  │  </Text><Text color="green">↑ {sent}</Text><Text dimColor> sent</Text><Text> </Text><Text color="magenta">↓ {recv}</Text><Text dimColor> recv</Text></Text>
         <Text><Text color="cyan">LOC: </Text><Text>{loc === null ? "…" : loc.toLocaleString("pl-PL")}</Text><Text>  │  </Text><Text color="cyan">Czas: </Text><Text>{formatDuration(elapsed)}</Text><Text>  │  </Text><Text color="cyan">Env: </Text>{envs.map((e, i) => <Text key={e.label} color={e.ok ? "green" : "gray"}>{i ? " " : ""}{e.ok ? "✓" : "✗"}{e.label}</Text>)}</Text>
+        {lastErr && <Text color="red">✗ {lastErr}</Text>}
       </Box>
 
       <Box borderStyle="round" borderColor="green" marginTop={1} paddingX={1} flexDirection="column" minHeight={8}>
-        <Text bold color="green">● ODPOWIEDŹ MODELU {busy ? "(pisze…)" : ""}</Text>
-        {messages.length === 0 && !busy && <Text dimColor> Brak wiadomości — wpisz polecenie lub :help</Text>}
+        <Text bold color="green">● ODPOWIEDŹ MODELU {busy ? "(pisze… 60s timeout)" : ""}</Text>
+        {messages.length === 0 && !busy && <Text dimColor> Brak wiadomości — wpisz polecenie lub :help  •  :models test {modelId} diagnozuje lokalny model</Text>}
         {messages.map((m, i) => (
           <Box key={i} flexDirection="column" marginTop={m.role === "user" ? 1 : 0}>
-            <Text color={m.role === "user" ? "blue" : m.role === "system" ? "yellow" : "white"} bold>{m.role === "user" ? "› TY:" : m.role === "system" ? "◆ SYS:" : "● AI:"}</Text>
-            <Text color={m.role === "system" ? "yellow" : undefined}>{m.text || (busy && i === messages.length - 1 ? "…" : "")}</Text>
+            <Text color={m.role === "user" ? "blue" : m.role === "system" ? "yellow" : m.role === "error" ? "red" : "white"} bold>{m.role === "user" ? "› TY:" : m.role === "system" ? "◆ SYS:" : m.role === "error" ? "✗ ERR:" : "● AI:"}</Text>
+            <Text color={m.role === "error" ? "red" : m.role === "system" ? "yellow" : undefined}>{m.text || (busy && i === messages.length - 1 ? "…" : "")}</Text>
           </Box>
         ))}
       </Box>
 
-      <Box borderStyle="round" borderColor={isCmd ? "yellow" : "magenta"} marginTop={1} paddingX={1}>
+      <Box borderStyle="round" borderColor={isCmd ? "yellow" : lastErr ? "red" : "magenta"} marginTop={1} paddingX={1}>
         <Text color={isCmd ? "yellow" : "magenta"} bold>{isCmd ? ":" : "›"} </Text>
         <Text color={busy ? "gray" : isCmd ? "yellow" : "yellow"}>{busy ? "(zajęty…)" : isCmd ? input.slice(1) : input}<Text backgroundColor={busy ? undefined : isCmd ? "yellow" : "white"} color={isCmd ? "black" : "white"}> </Text></Text>
       </Box>
-      <Box><Text dimColor> :models :models add/key/rm :compact :exit | Tab = model</Text></Box>
+      <Box><Text dimColor> :models test {modelId} → diagnoza lokalnego | :models key &lt;id&gt; &lt;key&gt;</Text></Box>
     </Box>
   );
 }
