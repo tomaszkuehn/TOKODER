@@ -7,15 +7,26 @@ import { countLOC, detectEnvs, formatDuration, estimateTokens } from "../utils/s
 import { setEnvKey, maskKey } from "../utils/env.js";
 import { logEntry } from "../utils/logger.js";
 import { listOllamaModels, ollamaIdSuggestion } from "../utils/ollama.js";
+import { loadSession, saveSession, clearSession } from "../core/session.js";
 
-export function App({ initialPrompt, initialModel }: { initialPrompt?: string; initialModel?: string }) {
+export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: string; initialModel?: string; resumed?: boolean }) {
   const { exit } = useApp();
   const { stdout } = useStdout();
   const [cfg, setCfg] = useState(() => loadConfig());
-  const [modelId, setModelId] = useState(initialModel ?? cfg.defaultModel);
+  const restored = useMemo(() => (initialModel ? null : loadSession()), []);
+  const [modelId, setModelId] = useState(initialModel ?? restored?.modelId ?? cfg.defaultModel);
   const [input, setInput] = useState(initialPrompt ?? "");
-  const [messages, setMessages] = useState<{ role: "user" | "assistant" | "system" | "error"; text: string }[]>([]);
-  const historyRef = useRef<{ role: "user" | "assistant"; content: string }[]>([]);
+  const [messages, setMessages] = useState<{ role: "user" | "assistant" | "system" | "error"; text: string }[]>(() => {
+    if (resumed && restored?.history?.length) {
+      const out: { role: "user" | "assistant" | "system" | "error"; text: string }[] = [
+        { role: "system", text: `↻ Session restored (${restored.history.length} messages, model: ${restored.modelId}, saved: ${restored.updatedAt ?? "?"}).` },
+      ];
+      for (const m of restored.history) out.push({ role: m.role === "user" ? "user" : "assistant", text: m.content });
+      return out;
+    }
+    return [];
+  });
+  const historyRef = useRef<{ role: "user" | "assistant"; content: string }[]>(resumed && restored?.history?.length ? [...restored.history] : []);
   const [cmdHistory, setCmdHistory] = useState<string[]>([]);
   const [histIdx, setHistIdx] = useState(-1);
   const draftRef = useRef("");
@@ -41,6 +52,14 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
   const [envs] = useState(() => detectEnvs());
   const [scroll, setScroll] = useState(0);
   const startRef = useRef(Date.now());
+  const startedAtRef = useRef(restored?.startedAt ?? new Date().toISOString());
+  const sessionModelRef = useRef(modelId);
+  useEffect(() => { sessionModelRef.current = modelId; }, [modelId]);
+  const persistSession = () => {
+    try {
+      saveSession({ modelId: sessionModelRef.current, startedAt: startedAtRef.current, history: historyRef.current }, process.cwd());
+    } catch {}
+  };
 
   const bumpTokens = (id: string, s: number, r: number) =>
     setTokenStats((st) => {
@@ -163,7 +182,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
     setModelId(next.id);
   };
 
-  const COMMANDS = ["exit", "quit", "q", "compact", "compact-mode", "compact-auto", "agents", "init", "clear", "models", "key", "help", "allow", "deny"] as const;
+  const COMMANDS = ["exit", "quit", "q", "compact", "compact-mode", "compact-auto", "agents", "init", "clear", "models", "key", "help", "allow", "deny", "session"] as const;
   const MODEL_SUBS = ["add", "rm", "default", "key", "test", "set"] as const;
 
   const getSuggestion = (raw: string): string | null => {
@@ -233,6 +252,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
         ...res.kept,
       ];
       pushSystem(`✓ Compact (${res.mode}): -${res.removed} messages, context ≈${estimateHistoryTokens(historyRef.current)} tok${res.instruction ? ", instruction applied" : ""}`);
+      persistSession();
     } catch (e: any) {
       pushError(`Compact failed: ${e.message ?? String(e)}`);
     } finally {
@@ -320,6 +340,18 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
     }
     if (["compact", "clear", "compress"].includes(c)) {
       await runCompact(args.join(" ").trim() || undefined);
+      persistSession();
+      return true;
+    }
+    if (c === "session") {
+      const { sessionExists } = await import("../core/session.js");
+      if (args[0] === "reset" || args[0] === "clear") {
+        clearSession();
+        historyRef.current = [];
+        setMessages([{ role: "system", text: "Session cleared — next start begins fresh." }]);
+        return true;
+      }
+      pushSystem(`Session: ${sessionExists() ? "saved for this folder" : "none"}\nResume: tocoder -c (in this folder)\nReset: :session reset`);
       return true;
     }
     if (["models", "model", "providers"].includes(c)) {
@@ -459,7 +491,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       pushSystem(r.created ? `✓ Created ${r.path} with default content (≈${tok} tok sent with every prompt)` : `${r.path} already exists — see :agents`);
       return true;
     }
-    if (["help", "h", "?"].includes(c)) { pushSystem(`Commands:\n:exit / :q — exit\n:compact [instruction] — compact history (mode: :compact-mode)\n  examples: :compact keep the implementation plan\n             :compact focus on decisions and file paths\n             :compact keep open threads and next steps\n:compact-mode <reduce|balance|value> — compact strategy\n:compact-auto <on|off|percent|tokens <n>> — auto-trigger: % of context window OR absolute token limit, whichever comes first\n:agents — project instructions file (AGENTS.md), sent with every prompt\n  :agents init | edit | add <text> | rm <line>\n:init — create AGENTS.md with defaults\n:key — set Ollama Cloud API key\n:models — list | :models add/rm — wizards | :models test <id>\n  :models set <id> contextWindow <tok> — window for auto-compact\n:allow <path> / :deny <path> — sandbox\nEsc during work = abort run | Tool prompt: [Y]es [N]o [A]bort (Shift+A always) | ACL prompt: [P]File [F]Parent [N]o [A]bort\nPgUp/PgDn scroll`); return true; }
+    if (["help", "h", "?"].includes(c)) { pushSystem(`Commands:\n:exit / :q — exit\n:compact [instruction] — compact history (mode: :compact-mode)\n  examples: :compact keep the implementation plan\n             :compact focus on decisions and file paths\n             :compact keep open threads and next steps\n:compact-mode <reduce|balance|value> — compact strategy\n:compact-auto <on|off|percent|tokens <n>> — auto-trigger: % of context window OR absolute token limit, whichever comes first\n:agents — project instructions file (AGENTS.md), sent with every prompt\n  :agents init | edit | add <text> | rm <line>\n:init — create AGENTS.md with defaults\n:key — set Ollama Cloud API key\n:models — list | :models add/rm — wizards | :models test <id>\n  :models set <id> contextWindow <tok> — window for auto-compact\n:allow <path> / :deny <path> — sandbox\n:session — info | :session reset — clear saved session (tocoder -c resumes)\nEsc during work = abort run | Tool prompt: [Y]es [N]o [A]bort (Shift+A always) | ACL prompt: [P]File [F]Parent [N]o [A]bort\nPgUp/PgDn scroll`); return true; }
     pushSystem(`Unknown command ":${c}". Try :help`); return true;
   };
 
@@ -657,7 +689,8 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
         }
         if (!usageSent) bumpTokens(modelId, estimateTokens(prompt), 0);
         if (!usageRecv && acc.trim()) bumpTokens(modelId, 0, estimateTokens(acc));
-        historyRef.current = [...history, { role: "user" as const, content: effectivePrompt }, { role: "assistant" as const, content: acc }].slice(-20);
+        historyRef.current = [...history, { role: "user" as const, content: effectivePrompt }, { role: "assistant" as const, content: acc }].slice(-40);
+        persistSession();
         const cc = normalizeCompact(cfgRef.current.compact);
         if (cc.autoTrigger) {
           const ctx = active.contextWindow ?? DEFAULT_CONTEXT_WINDOW;

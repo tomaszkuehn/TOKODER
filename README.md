@@ -5,7 +5,7 @@ AI coding agent for the terminal — clone of [opencode](https://github.com/anom
 ## Features
 
 - **Agent loop** with tool calling (`read`, `write`, `edit`, `bash`, `glob`, `grep`) — manual multi-step loop (`stepCountIs`), 300s timeout per step, typed errors, always replies even if text empty
-- **Tool approval** — every tool call asks `[Y]es / [N]o / [A]lways` (A whitelists tool for the session); denied calls report back to the model
+- **Session memory** — model + conversation context are auto-saved per folder after each turn (`~/.config/tokoder/sessions/<folder-hash>.json`). Start `tocoder -c` to resume the last session in this folder (restores model and history); `:session reset` clears it
 - **ACL sandbox** — full access inside `cwd`; outside: Windows system folders always denied, per-mode rules (read/write/execute) persisted across sessions in `~/.config/tokoder/access-rules.json`; on first access outside rules the app asks `[P]File / [F]Parent folder / [N]o` and auto-retries the tool. Manage with `:acl`, `:acl set <mode> <yes|no>`, `:allow <path> [read|write|execute]`, `:deny <path>`
 - **Multi-model** — models via `tokoder.config.json` (Anthropic / OpenAI / OpenRouter / Ollama local + Ollama Cloud)
 - **Interactive `:models add` wizard** — local/cloud Ollama with live model listing (`/api/tags`), auto-suggested free id (overridable); cloud requires key set first via `:key`
@@ -78,7 +78,9 @@ ollama pull qwen3:8b
 ## Usage
 
 ```bash
-tocoder                          # TUI, default model
+tocoder                          # TUI, last-used model for this folder (fallback: config default)
+tocoder -c                       # resume last session in this folder (model + context)
+tocoder -c "continue the task"   # resume and immediately send a prompt
 tocoder -m gpt-4o "fix tests"    # TUI with prompt + model
 tocoder --no-tui "explain src/"  # plain stdout
 tocoder --no-tui --timeout 900 "big refactor"  # longer timeout
@@ -92,8 +94,8 @@ TOCODER_DEBUG=1 tocoder          # per-step finishReason diagnostics
 # :e + Tab/Enter   autocomplete vim commands (ghost hint)
 # PgUp/PgDn        scroll output (auto-scroll pauses; PgDn returns to bottom)
 # ↑/↓              previous prompts & commands — editable (Backspace works)
-# Y / N / A        approve / deny / always-allow pending tool call
-# P / F / N        grant access outside project: file / parent dir / deny
+# Y / N / A        approve / deny / abort pending tool call (Shift+A = always)
+# P / F / N / A    grant access outside project: file / parent dir / deny / abort
 # Enter            send (prefix :comp → :compact auto-completes)
 # Esc              cancel wizard / prompt (exit only via :exit or Ctrl+C)
 

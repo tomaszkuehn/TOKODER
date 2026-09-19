@@ -25,6 +25,7 @@ program
 program
   .argument("[prompt...]", "task for agent")
   .option("-m, --model <id>", "model id from tokoder.config.json")
+  .option("-c, --continue", "resume last session in this folder (model + context)")
   .option("--all", "run prompt on all configured models in parallel")
   .option("--compare", "alias for --all with labeled output")
   .option("--no-tui", "plain stdout, no Ink")
@@ -33,7 +34,8 @@ program
     if (!promptParts.length) {
       const modelId = opts.model as string | undefined;
       if (modelId) resolveModel(modelId);
-      const inst = render(React.createElement(App, { initialModel: modelId }), { exitOnCtrlC: false });
+      const resumed = !!opts.continue;
+      const inst = render(React.createElement(App, { initialModel: modelId, resumed }), { exitOnCtrlC: false });
       await inst.waitUntilExit();
       return;
     }
@@ -48,6 +50,7 @@ program
       return;
     }
     const modelId = opts.model as string | undefined;
+    const resumed = !!opts.continue;
     if (opts.tui === false) {
       let sent = 0, recv = 0;
       const out = await runAgentFull(prompt, { modelId, timeoutMs: (opts.timeout as number | undefined) ? (opts.timeout as number) * 1000 : undefined }, (u) => { sent += u.inputTokens; recv += u.outputTokens; });
@@ -55,7 +58,7 @@ program
       console.error(`\n[tokens] ↑ ${sent} sent  ↓ ${recv} recv`);
       return;
     }
-    const inst = render(React.createElement(App, { initialPrompt: prompt, initialModel: modelId }), { exitOnCtrlC: false });
+    const inst = render(React.createElement(App, { initialPrompt: prompt, initialModel: modelId, resumed }), { exitOnCtrlC: false });
     await inst.waitUntilExit();
   });
 
