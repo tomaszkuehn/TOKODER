@@ -12,5 +12,5 @@ out/
 .vscode/
 .idea/
 nul
-scraper-app/
 access-rules.json
+tokoder.config.local.json

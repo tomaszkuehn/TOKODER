@@ -6,14 +6,15 @@ AI coding agent for the terminal — clone of [opencode](https://github.com/anom
 
 - **Agent loop** with tool calling (`read`, `write`, `edit`, `bash`, `glob`, `grep`) — manual multi-step loop (`stepCountIs`), 300s timeout per step, typed errors, always replies even if text empty
 - **Session memory** — model + conversation context are auto-saved per folder after each turn (`~/.config/tokoder/sessions/<folder-hash>.json`). Start `tocoder -c` to resume the last session in this folder (restores model and history); `:session reset` clears it
-- **ACL sandbox** — full access inside `cwd`; outside: Windows system folders always denied, per-mode rules (read/write/execute) persisted across sessions in `~/.config/tokoder/access-rules.json`; on first access outside rules the app asks `[P]File / [F]Parent folder / [N]o` and auto-retries the tool. Manage with `:acl`, `:acl set <mode> <yes|no>`, `:allow <path> [read|write|execute]`, `:deny <path>`
+- **Tool approval** — in-project targets run automatically; only `bash` commands touching absolute/`~`/`$env:` paths or out-of-project workdirs ask `[Y]es / [N]o / [A]bort run` (Shift+A = always for that tool this session); Esc aborts the run
+- **ACL sandbox** — full access inside `cwd`; outside: Windows system folders always denied, per-mode rules (read/write/execute) persisted across sessions in `~/.config/tokoder/access-rules.json`; on first access outside rules the app asks `[P]File / [F]Parent folder / [N]o / [A]bort` and auto-retries the tool. Manage with `:acl`, `:acl set <mode> <yes|no>`, `:allow <path> [read|write|execute]`, `:deny <path>`
 - **Multi-model** — models via `tokoder.config.json` (Anthropic / OpenAI / OpenRouter / Ollama local + Ollama Cloud)
 - **Interactive `:models add` wizard** — local/cloud Ollama with live model listing (`/api/tags`), auto-suggested free id (overridable); cloud requires key set first via `:key`
 - **Per-model token counters** — `id (1.1k↑/3.4k↓)` next to every model in header (0↑/0↓ when unused), `↑ sent ↓ recv` for active model + `∑` total, counted until app exit; real `usage` from provider per agent step, `len/4` fallback
 - **3-panel TUI** — fixed header/status/input (`flexShrink:0`), auto-scrolling output with scrollbar (`PgUp`/`PgDn` pauses, PgDn returns to bottom), editable `↑`/`↓` command history (incl. commands), wrap-aware flex status panel (responsive on narrow terminals), alt buffer with sync transcript dump (`TOCODER_ALT_SCREEN=0` disables), cwd shown in header, Esc cancels (exit only via `:exit`)
 - **Vim-style commands** — `:exit` `:compact` `:key` `:models` `:acl` `:allow`/`:deny` with ghost autocomplete (`Tab`/`Enter` completes)
 - **Project instructions (`AGENTS.md`)** — file appended to the system prompt on every call: output-discipline rules (token savings) + tool cheat-sheet. `:agents init` creates it with defaults, `:agents edit` opens `$EDITOR` (default notepad), `:agents add <text>` appends, `:agents rm <n>` deletes a numbered line; changes apply from the next prompt
-- **Compact** — 3 strategies (`reduce`/`balance`/`value`), optional steering instruction, auto-trigger at % of context window (see below)
+- **Compact** — 3 strategies (`reduce`/`balance`/`value`), optional steering instruction, auto-trigger at % of context window or absolute token limit (see below)
 - **Chat history** — keeps 20 turns, `1`-`9` auto-expands quoting the actual option text from the model's list
 - **CLI** — `tocoder` (also `tokoder` alias), `models`, `--all` parallel compare, `--no-tui` (prints `[tokens] ↑ ↓`), `--timeout <seconds>`
 - **Diagnostics** — `:models test <id>` checks Ollama `/api/tags` / `/v1/models`, shows `ECONNREFUSED`/`401`/`404` instead of silent hang; `TOCODER_DEBUG=1` logs per-step `finishReason`
@@ -112,7 +113,7 @@ scripts/tocoder.bat "prompt"
 | `:exit`, `:q`, `:quit` | exit (transcript dumped) |
 | `:compact [instruction]` | compact history — mode-dependent (see below); instruction focuses the summary |
 | `:compact-mode <reduce\|balance\|value>` | compact strategy (default `balance`), persisted in config |
-| `:compact-auto <on\|off\|10-100\|tokens <n>>` | auto-compact fires at **whichever comes first**: N% of model context window (default 70%) or absolute token limit (`:compact-auto tokens 40000`; 0 = off) |
+| `:compact-auto <on\|off\|percent <n>\|10-100\|tokens <n>>` | auto-compact fires at **whichever comes first**: N% of model context window (default 70%) or absolute token limit (`:compact-auto tokens 40000`; 0 = off) |
 | `:agents` | show `AGENTS.md` with line numbers + token cost per prompt |
 | `:agents init` / `:init` | create `AGENTS.md` with default instructions |
 | `:agents edit` | open in `$EDITOR` (default notepad) |
@@ -133,6 +134,8 @@ scripts/tocoder.bat "prompt"
 | `:acl set <read\|write\|execute> <yes\|no>` | toggle global outside-access default |
 | `:allow <path> [read\|write\|execute]` | permit path outside `cwd` |
 | `:deny <path>` | revoke |
+| `:session` | session info (saved file, resume hint) |
+| `:session reset` | clear saved session for this folder |
 | `:help` | help |
 
 Typing `:` shows ghost hint when prefix is unambiguous — `Enter` executes, `Tab` completes (e.g. `:comp` → `:compact`).
@@ -172,7 +175,8 @@ History compaction replaces old turns with a model-generated summary + keeps rec
   - Windows system folders (`C:\Windows`, `Program Files`, `ProgramData`) — never accessible
   - Global defaults: `read=YES`, `write=NO`, `execute=NO`
   - Per-path exceptions with mode (`r:`/`w:`/`x:`)
-- When a tool hits a path outside rules, the app asks: `[P]File` (this file only), `[F]Parent folder` (parent dir), `[N]o` — then auto-retries the tool call.
+- When a tool hits a path outside rules, the app asks: `[P]File` (this file only), `[F]Parent folder` (parent dir), `[N]o`, `[A]bort run` — then auto-retries the tool call on grant.
+- Access requests use an internal NUL-delimited marker protocol (`TOCODER_ACL_REQ`), not text sniffing — reading files that mention ACL internals never triggers false prompts.
 - All rules persist across sessions in `%USERPROFILE%\.config\tokoder\access-rules.json`.
 
 ## TUI Layout
@@ -187,11 +191,11 @@ History compaction replaces old turns with a model-generated summary + keeps rec
 │ ● AI: ...                               █  │  ← PgUp/PgDn pauses
 ├─ INPUT ────────────────────────────────────┤
 │ › your command ▌                           │
-│ ⚡ Tool: bash {"command":"g++ ..."}         │  ← pending approval
-│ [Y]es  [N]o  [A]lways for bash             │
+│ ⚡ Tool: bash {"command":"g++ ..."}         │  ← pending approval (out-of-project / risky cmd only)
+│ [Y]es  [N]o  [A]bort  (Shift+A = always)   │
 │ 🔒 ACCESS OUTSIDE PROJECT (write)          │  ← ACL prompt
 │    D:\outside\file.txt                     │
-│ [P]File  [F]Parent folder  [N]o            │
+│ [P]File  [F]Parent  [N]o  [A]bort run      │
 └────────────────────────────────────────────┘
 ```
 
@@ -214,7 +218,11 @@ History compaction replaces old turns with a model-generated summary + keeps rec
 
 **Choice `1`-`9` ignored** — now expands quoting the option text from the model's last list, with 20-turn history.
 
-**Builds outside folder** — ACL: system folders always denied; outside rules → app asks `[P]File/[F]Parent/[N]o` and auto-retries. Defaults `read=YES, write=NO, execute=NO`; change via `:acl set <mode> <yes|no>`, per-path `:allow <path> [mode]`. Rules live in `~/.config/tokoder/access-rules.json`.
+**Builds outside folder** — ACL: system folders always denied; outside rules → app asks `[P]File/[F]Parent/[N]o/[A]bort` and auto-retries. Defaults `read=YES, write=NO, execute=NO`; change via `:acl set <mode> <yes|no>`, per-path `:allow <path> [mode]`. Rules live in `~/.config/tokoder/access-rules.json`.
+
+**bash killed instantly, empty `Error (exit ?)`** — the bash tool `timeout` is in **seconds** (default 30, cap 600). Older builds treated it as ms. Killed commands now return an explicit "killed after Ns timeout" hint.
+
+**Agent stuck asking `[Y]es` for every tool** — in-project tool targets (and plain bash commands) are auto-approved; prompts appear only for out-of-project paths or bash referencing absolute/home/`$env:` paths. Tool prompt `[A]` aborts the whole run; Shift+A whitelists the tool for the session.
 
 **Local model no response**
 
@@ -235,19 +243,22 @@ Common: `404` → wrong `model`; `ECONNREFUSED` → not running; `401` → wrong
 
 ```
 src/
-  cli.ts              # commander CLI (tocoder), dotenv, --timeout
+  cli.ts              # commander CLI (tocoder), dotenv, -c/--continue, --timeout
   core/
-    agent.ts          # manual step loop (stepCountIs 1 + msgs re-feed), tool approval, timeout per step, testConnection
-    config.ts         # load/save tokoder.config.json
+    agent.ts          # manual step loop (stepCountIs 1 + msgs re-feed), tool approval + abort, ACL marker protocol, timeout per step, testConnection
+    config.ts         # load/save tokoder.config.json (global+local merge), compact config + limits
+    compact.ts        # compactHistory (reduce/balance/value), estimateHistoryTokens
     instructions.ts   # AGENTS.md — read/init/append/remove + system-prompt injection
     providers.ts      # getModelFromConfig
-  tools/              # read / write / edit / bash / glob / grep (guarded); agentTools (schemas) + executors
-  tui/App.tsx         # Ink 3-panel, vim, autocomplete, editable history, auto-scroll + scrollbar, tool approval + ACL prompt, per-model token stats, :models add/rm wizards
+    session.ts        # per-folder session persistence (model + history), ~  /.config/tokoder/sessions/<hash>.json
+  tools/              # read / write / edit / bash / glob / grep (ACL-guarded); agentTools (schemas) + executors
+  tui/App.tsx         # Ink 3-panel, vim, autocomplete, editable history, auto-scroll + scrollbar, tool approval + ACL prompt (abort), per-model token stats, :models add/rm wizards, auto-compact
   utils/
     stats.ts          # LOC + env + duration
     env.ts            # .env set/mask
+    logger.ts         # structured log entries (logs/ dir)
     ollama.ts         # listOllamaModels (local/cloud), id suggestion
-    permissions.ts    # checkAccess (ACL modes), rules persistence, guard, allow/deny
+    permissions.ts    # checkAccess (ACL modes), rules persistence, accessRequest marker, guard, allow/deny
 scripts/
   tocoder.ps1 / .sh / .bat (and tokoder aliases)
 tokoder.config.json
