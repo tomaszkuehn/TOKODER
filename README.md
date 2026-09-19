@@ -12,6 +12,8 @@ AI coding agent for the terminal — clone of [opencode](https://github.com/anom
 - **Per-model token counters** — `id (1.1k↑/3.4k↓)` next to every model in header (0↑/0↓ when unused), `↑ sent ↓ recv` for active model + `∑` total, counted until app exit; real `usage` from provider per agent step, `len/4` fallback
 - **3-panel TUI** — fixed header/status/input (`flexShrink:0`), auto-scrolling output with scrollbar (`PgUp`/`PgDn` pauses, PgDn returns to bottom), editable `↑`/`↓` command history (incl. commands), wrap-aware flex status panel (responsive on narrow terminals), alt buffer with sync transcript dump (`TOCODER_ALT_SCREEN=0` disables), cwd shown in header, Esc cancels (exit only via `:exit`)
 - **Vim-style commands** — `:exit` `:compact` `:key` `:models` `:acl` `:allow`/`:deny` with ghost autocomplete (`Tab`/`Enter` completes)
+- **Project instructions (`AGENTS.md`)** — file appended to the system prompt on every call: output-discipline rules (token savings) + tool cheat-sheet. `:agents init` creates it with defaults, `:agents edit` opens `$EDITOR` (default notepad), `:agents add <text>` appends, `:agents rm <n>` deletes a numbered line; changes apply from the next prompt
+- **Compact** — 3 strategies (`reduce`/`balance`/`value`), optional steering instruction, auto-trigger at % of context window (see below)
 - **Chat history** — keeps 20 turns, `1`-`9` auto-expands quoting the actual option text from the model's list
 - **CLI** — `tocoder` (also `tokoder` alias), `models`, `--all` parallel compare, `--no-tui` (prints `[tokens] ↑ ↓`), `--timeout <seconds>`
 - **Diagnostics** — `:models test <id>` checks Ollama `/api/tags` / `/v1/models`, shows `ECONNREFUSED`/`401`/`404` instead of silent hang; `TOCODER_DEBUG=1` logs per-step `finishReason`
@@ -102,6 +104,11 @@ scripts/tocoder.bat "prompt"
 | `:compact [instruction]` | compact history — mode-dependent (see below); instruction focuses the summary |
 | `:compact-mode <reduce\|balance\|value>` | compact strategy (default `balance`), persisted in config |
 | `:compact-auto <on\|off\|10-100>` | auto-compact trigger at N% of model context window (default 70%) |
+| `:agents` | show `AGENTS.md` with line numbers + token cost per prompt |
+| `:agents init` / `:init` | create `AGENTS.md` with default instructions |
+| `:agents edit` | open in `$EDITOR` (default notepad) |
+| `:agents add <text>` | append an instruction line |
+| `:agents rm <n>` | delete line n |
 | `:key` | interactive Ollama Cloud API key setup |
 | `:models` | list models |
 | `:models <id>` | switch model |
@@ -119,6 +126,20 @@ scripts/tocoder.bat "prompt"
 | `:help` | help |
 
 Typing `:` shows ghost hint when prefix is unambiguous — `Enter` executes, `Tab` completes (e.g. `:comp` → `:compact`).
+
+## Project Instructions (AGENTS.md)
+
+A file appended to the system prompt with **every** model call — keeps answers terse (output-token savings) and documents available tools/conventions.
+
+```bash
+:agents init    # create AGENTS.md with defaults
+:agents         # view (numbered) + token cost
+:agents edit    # $EDITOR (default notepad on Windows)
+:agents add Verify with npm test before answering.
+:agents rm 7    # delete line 7
+```
+
+Default content covers output discipline (no preamble, short final answers), the tool set, and conventions. If the file doesn't exist, only the built-in system prompt is sent.
 
 ## Compact
 
@@ -208,6 +229,7 @@ src/
   core/
     agent.ts          # manual step loop (stepCountIs 1 + msgs re-feed), tool approval, timeout per step, testConnection
     config.ts         # load/save tokoder.config.json
+    instructions.ts   # AGENTS.md — read/init/append/remove + system-prompt injection
     providers.ts      # getModelFromConfig
   tools/              # read / write / edit / bash / glob / grep (guarded); agentTools (schemas) + executors
   tui/App.tsx         # Ink 3-panel, vim, autocomplete, editable history, auto-scroll + scrollbar, tool approval + ACL prompt, per-model token stats, :models add/rm wizards

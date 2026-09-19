@@ -2,6 +2,7 @@ import { streamText, stepCountIs } from "ai";
 import { getModelFromConfig, resolveModel, listModels } from "./providers.js";
 import { agentTools, executors } from "../tools/index.js";
 import { logEntry } from "../utils/logger.js";
+import { buildSystemPrompt } from "./instructions.js";
 import type { ModelConfig } from "./config.js";
 
 const SYSTEM = `You are tokoder, an AI coding agent like opencode/claude-code.
@@ -62,7 +63,7 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
       try {
         result = streamText({
           model: mdl,
-          system: SYSTEM,
+          system: buildSystemPrompt(SYSTEM, opts.cwd ?? process.cwd()),
           messages: msgs,
           tools: agentTools,
           stopWhen: stepCountIs(1),

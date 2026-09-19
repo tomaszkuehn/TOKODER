@@ -162,7 +162,7 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
     setModelId(next.id);
   };
 
-  const COMMANDS = ["exit", "quit", "q", "compact", "compact-mode", "compact-auto", "clear", "models", "key", "help", "allow", "deny"] as const;
+  const COMMANDS = ["exit", "quit", "q", "compact", "compact-mode", "compact-auto", "agents", "init", "clear", "models", "key", "help", "allow", "deny"] as const;
   const MODEL_SUBS = ["add", "rm", "default", "key", "test", "set"] as const;
 
   const getSuggestion = (raw: string): string | null => {
@@ -383,7 +383,61 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       pushSystem(`✓ ${field} = ${(r as any)[field] ? "YES" : "NO"} (persisted across sessions)`);
       return true;
     }
-    if (["help", "h", "?"].includes(c)) { pushSystem(`Commands:\n:exit / :q — exit\n:compact [instruction] — compact history (mode: :compact-mode)\n  examples: :compact keep the implementation plan\n             :compact focus on decisions and file paths\n             :compact keep open threads and next steps\n:compact-mode <reduce|balance|value> — compact strategy\n:compact-auto <on|off|percent> — auto-trigger at % of context window\n:key — set Ollama Cloud API key\n:models — list | :models add/rm — wizards | :models test <id>\n  :models set <id> contextWindow <tok> — window for auto-compact\n:allow <path> / :deny <path> — sandbox\nPgUp/PgDn scroll`); return true; }
+    if (["agents", "instructions", "instr"].includes(c)) {
+      const mod = await import("../core/instructions.js");
+      const { readInstructions, instructionsPath, appendInstruction, removeInstructionLine, initInstructions, INSTRUCTIONS_FILE } = mod;
+      const p = instructionsPath();
+      const sub = args[0]?.toLowerCase();
+      if (sub === "init") {
+        const r = initInstructions();
+        const tok = estimateTokens(readInstructions() ?? "");
+        pushSystem(r.created ? `✓ Created ${r.path} with default content (≈${tok} tok sent with every prompt)` : `${INSTRUCTIONS_FILE} already exists: ${r.path}\nEdit: :agents edit | :agents add <text> | :agents rm <n>`);
+        return true;
+      }
+      if (sub === "add") {
+        const text = args.slice(1).join(" ").trim();
+        if (!text) { pushSystem("Usage: :agents add <text>"); return true; }
+        appendInstruction(text);
+        pushSystem(`✓ Appended to ${INSTRUCTIONS_FILE}: "${text}"`);
+        return true;
+      }
+      if (sub === "rm") {
+        const n = parseInt(args[1] ?? "", 10);
+        if (!n) { pushSystem("Usage: :agents rm <line-number> (numbers shown in :agents)"); return true; }
+        const removed = removeInstructionLine(n);
+        pushSystem(removed === null ? `No line ${n} in ${INSTRUCTIONS_FILE}` : `✓ Removed line ${n}: ${removed.trim().slice(0, 80) || "(empty)"}`);
+        return true;
+      }
+      if (sub === "edit") {
+        if (readInstructions() === null) { pushSystem(`${INSTRUCTIONS_FILE} does not exist. Run :agents init first.`); return true; }
+        const editor = process.env.EDITOR ?? "notepad";
+        pushSystem(`Opening ${p} in ${editor}… (applies from the next prompt)`);
+        try {
+          const { spawnSync } = await import("node:child_process");
+          const r = spawnSync(editor, [p], { stdio: "inherit", shell: process.platform === "win32" });
+          pushSystem(r.status === 0 ? `✓ ${INSTRUCTIONS_FILE} saved — applies from the next prompt` : `${editor} exited with code ${r.status}`);
+        } catch (e: any) {
+          pushError(`Editor failed: ${e.message}. Set EDITOR env or edit ${p} manually.`);
+        }
+        return true;
+      }
+      const content = readInstructions();
+      if (content === null) {
+        pushSystem(`${INSTRUCTIONS_FILE} not found in project (${p}).\nSent with EVERY prompt — saves output tokens, informs the model about tools.\nCreate: :agents init  •  Edit: :agents edit  •  Append: :agents add <text>  •  Remove: :agents rm <n>`);
+        return true;
+      }
+      const numbered = content.split("\n").map((l, i) => `${String(i + 1).padStart(3)}| ${l}`).join("\n");
+      pushSystem(`${INSTRUCTIONS_FILE} (${p}) — ≈${estimateTokens(content)} tok sent with every prompt:\n${numbered}\n\nEdit: :agents edit (EDITOR, default notepad)  •  Add: :agents add <text>  •  Remove: :agents rm <n>`);
+      return true;
+    }
+    if (c === "init") {
+      const { initInstructions, readInstructions } = await import("../core/instructions.js");
+      const r = initInstructions();
+      const tok = estimateTokens(readInstructions() ?? "");
+      pushSystem(r.created ? `✓ Created ${r.path} with default content (≈${tok} tok sent with every prompt)` : `${r.path} already exists — see :agents`);
+      return true;
+    }
+    if (["help", "h", "?"].includes(c)) { pushSystem(`Commands:\n:exit / :q — exit\n:compact [instruction] — compact history (mode: :compact-mode)\n  examples: :compact keep the implementation plan\n             :compact focus on decisions and file paths\n             :compact keep open threads and next steps\n:compact-mode <reduce|balance|value> — compact strategy\n:compact-auto <on|off|percent> — auto-trigger at % of context window\n:agents — project instructions file (AGENTS.md), sent with every prompt\n  :agents init | edit | add <text> | rm <line>\n:init — create AGENTS.md with defaults\n:key — set Ollama Cloud API key\n:models — list | :models add/rm — wizards | :models test <id>\n  :models set <id> contextWindow <tok> — window for auto-compact\n:allow <path> / :deny <path> — sandbox\nPgUp/PgDn scroll`); return true; }
     pushSystem(`Unknown command ":${c}". Try :help`); return true;
   };
 
