@@ -1,6 +1,7 @@
 import { streamText, stepCountIs } from "ai";
 import { getModelFromConfig, resolveModel, listModels } from "./providers.js";
 import { agentTools, executors } from "../tools/index.js";
+import { logEntry } from "../utils/logger.js";
 import type { ModelConfig } from "./config.js";
 
 const SYSTEM = `You are tokoder, an AI coding agent like opencode/claude-code.
@@ -53,8 +54,10 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
     ? [...opts.history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })), { role: "user", content: prompt }]
     : [{ role: "user", content: prompt }];
   let sawText = false;
+  const stepText: string[] = [];
   try {
     for (let step = 0; step < maxSteps; step++) {
+      logEntry("DO MODELU", cfg.id, JSON.stringify({ step, messages: msgs }, null, 2));
       let result: any;
       try {
         result = streamText({
@@ -69,10 +72,12 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
         throw new AgentError(`[${cfg.id}] init failed: ${e.message} (check baseURL/model/key)`, e.code);
       }
       const pendingCalls: { toolCallId: string; toolName: string; input: any }[] = [];
+      stepText.length = 0;
       try {
         for await (const part of result.fullStream as AsyncIterable<any>) {
           if (part.type === "text-delta") {
             sawText = true;
+            stepText.push(part.text as string);
             yield part.text as string;
           } else if (part.type === "tool-call") {
             pendingCalls.push({ toolCallId: part.toolCallId, toolName: part.toolName, input: part.input });
@@ -92,6 +97,12 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
         throw new AgentError(`[${cfg.id}] ${msg}`, e.code);
       }
       if (timeoutFired) throw new AgentError(`[${cfg.id}] timeout after ${(opts.timeoutMs ?? 300000) / 1000}s — model was still working (tools). Retry with higher --timeout`, "TIMEOUT");
+      {
+        const parts: any[] = [];
+        if (stepText.length) parts.push({ text: stepText.join("") });
+        for (const c of pendingCalls) parts.push({ toolCall: { toolName: c.toolName, input: c.input } });
+        if (parts.length) logEntry("ODPOWIEDZ", cfg.id, JSON.stringify(parts, null, 2));
+      }
       let fr: any = null;
       try { fr = await result.finishReason; } catch {}
       if (process.env.TOCODER_DEBUG) console.error(`[debug] step=${step} finishReason=${JSON.stringify(fr)} toolCalls=${pendingCalls.length}`);
