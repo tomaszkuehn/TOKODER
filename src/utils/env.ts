@@ -19,30 +19,26 @@ export function getEnvPath(cwd = process.cwd()): string {
 
 export function setEnvKey(key: string, value: string, cwd = process.cwd()): void {
   const p = getEnvPath(cwd);
-  let content = existsSync(p) ? readFileSync(p, "utf-8") : "";
+  const content = existsSync(p) ? readFileSync(p, "utf-8") : "";
   const lines = content.split("\n");
+  const keyRe = new RegExp(`^\\s*${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\s*=)`);
   let found = false;
-  const next = lines.map((l) => {
-    if (l.trim().startsWith(`${key}=`) || l.trim().startsWith(`${key} =`)) {
+  const next: string[] = [];
+  for (const l of lines) {
+    if (!found && keyRe.test(l)) {
       found = true;
-      return `${key}=${value}`;
-    }
-    return l;
-  });
-  if (!found) {
-    if (next.length && next[next.length - 1].trim() !== "") next.push("");
-    next[next.length - 1] = `${key}=${value}`;
-    if (!found && next.join("\n").trim() === `${key}=${value}`) {
-      // already handled
-    } else if (!content.includes(`${key}=`)) {
-      // ensure added
-      if (!found) next.push(`${key}=${value}`);
+      next.push(`${key}=${value}`);
+    } else if (found && keyRe.test(l)) {
+      continue;
+    } else {
+      next.push(l);
     }
   }
-  // dedupe - rebuild cleanly
-  const map = parseEnv(content);
-  map[key] = value;
-  const out = Object.entries(map).map(([k, v]) => `${k}=${v}`).join("\n") + "\n";
+  if (!found) {
+    while (next.length && next[next.length - 1].trim() === "") next.pop();
+    next.push(`${key}=${value}`, "");
+  }
+  const out = next.join("\n");
   writeFileSync(p, out, "utf-8");
   process.env[key] = value;
 }

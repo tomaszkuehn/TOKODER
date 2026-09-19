@@ -1,6 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { z } from "zod";
-import { guard } from "../utils/permissions.js";
+import { guard, ACL_MARK } from "../utils/permissions.js";
 
 export const editSchema = z.object({
   path: z.string(),
@@ -11,7 +11,7 @@ export const editSchema = z.object({
 
 export async function editTool({ path, oldString, newString, replaceAll }: z.infer<typeof editSchema>) {
   const block = guard(path);
-  if (block) return `Error: ${block}`;
+  if (block) return block.startsWith(ACL_MARK) ? block : `Error: ${block}`;
   try {
     const content = await readFile(path, "utf-8");
     if (!content.includes(oldString)) return `Error: oldString not found in ${path}`;
