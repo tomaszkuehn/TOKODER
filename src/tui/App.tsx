@@ -45,8 +45,8 @@ export function App({ initialPrompt, initialModel }: { initialPrompt?: string; i
       let acc = "";
       setMessages((m) => [...m, { role: "assistant", text: "" }]);
       for await (const chunk of runAgent(prompt, { modelId }, (u) => {
-        setSent((s) => s + u.promptTokens - estimateTokens(prompt));
-        setRecv((r) => r + u.completionTokens);
+        setSent((s) => s + u.inputTokens - estimateTokens(prompt));
+        setRecv((r) => r + u.outputTokens);
       })) {
         acc += chunk;
         setMessages((m) => {

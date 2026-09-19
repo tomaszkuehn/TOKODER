@@ -14,7 +14,7 @@ export type AgentOpts = {
   cwd?: string;
 };
 
-export type Usage = { promptTokens: number; completionTokens: number; totalTokens: number };
+export type Usage = { inputTokens: number; outputTokens: number; totalTokens: number };
 
 export async function* runAgent(prompt: string, opts: AgentOpts = {}, onUsage?: (u: Usage) => void) {
   const cfg = opts.modelConfig ?? resolveModel(opts.modelId);
@@ -28,12 +28,12 @@ export async function* runAgent(prompt: string, opts: AgentOpts = {}, onUsage?: 
   } as any);
   for await (const chunk of result.textStream) yield chunk;
   try {
-    const usage = await result.usage;
-    if (usage && onUsage) onUsage({ promptTokens: usage.promptTokens, completionTokens: usage.completionTokens, totalTokens: usage.totalTokens });
+    const usage: any = await (result as any).usage;
+    if (usage && onUsage) onUsage({ inputTokens: usage.inputTokens ?? usage.promptTokens ?? 0, outputTokens: usage.outputTokens ?? usage.completionTokens ?? 0, totalTokens: usage.totalTokens ?? 0 });
   } catch {}
   try {
-    const total = await (result as any).totalUsage;
-    if (total && onUsage) onUsage({ promptTokens: total.promptTokens, completionTokens: total.completionTokens, totalTokens: total.totalTokens });
+    const total: any = await (result as any).totalUsage;
+    if (total && onUsage) onUsage({ inputTokens: total.inputTokens ?? total.promptTokens ?? 0, outputTokens: total.outputTokens ?? total.completionTokens ?? 0, totalTokens: total.totalTokens ?? 0 });
   } catch {}
 }
 

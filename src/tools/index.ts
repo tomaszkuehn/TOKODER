@@ -7,10 +7,10 @@ import { globSchema, globTool } from "./glob.js";
 import { grepSchema, grepTool } from "./grep.js";
 
 export const tools = {
-  read: tool({ description: "Read file or directory", parameters: readSchema, execute: readTool }),
-  write: tool({ description: "Write file (creates dirs)", parameters: writeSchema, execute: writeTool }),
-  edit: tool({ description: "Exact string replacement in file", parameters: editSchema, execute: editTool }),
-  bash: tool({ description: "Execute shell command (PowerShell/WSL)", parameters: bashSchema, execute: bashTool }),
-  glob: tool({ description: "Find files by glob pattern", parameters: globSchema, execute: globTool }),
-  grep: tool({ description: "Search file contents by regex", parameters: grepSchema, execute: grepTool }),
+  read: tool({ description: "Read file or directory", inputSchema: readSchema, execute: readTool as any }),
+  write: tool({ description: "Write file (creates dirs)", inputSchema: writeSchema, execute: writeTool as any }),
+  edit: tool({ description: "Exact string replacement in file", inputSchema: editSchema, execute: editTool as any }),
+  bash: tool({ description: "Execute shell command (PowerShell/WSL)", inputSchema: bashSchema, execute: bashTool as any }),
+  glob: tool({ description: "Find files by glob pattern", inputSchema: globSchema, execute: globTool as any }),
+  grep: tool({ description: "Search file contents by regex", inputSchema: grepSchema, execute: grepTool as any }),
 };
