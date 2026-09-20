@@ -54,6 +54,15 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
   const abortRef = useRef<AbortController | null>(null);
   /** set when user says "continue" after a step-limit stop → next run gets unlimited budget, then reset */
   const continueRef = useRef(false);
+  /** live supplements: typed while busy, queued for the next agent step boundary */
+  const [supplements, setSupplements] = useState<string[]>([]);
+  const supplementsRef = useRef<string[]>([]);
+  const pushSupplement = (t: string) => {
+    supplementsRef.current.push(t);
+    setSupplements([...supplementsRef.current]);
+    pushSystem(`⇪ Supplement queued — will be sent to the model at the next step boundary (${supplementsRef.current.length} waiting)`);
+  };
+
   /** quick commands: per-project slots 1-5, Ctrl+Q panel — digit OVERWRITES input with slot text; Ctrl+S saves current input */
   const [quick, setQuick] = useState<QuickMap>(() => loadQuick());
   const quickRef = useRef(quick);
@@ -767,6 +776,12 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
       cycleModel(key.shift ? -1 : 1); return;
     }
     if (key.return && wizard && input.trim()) { const v = input; setInput(""); handleWizard(v); return; }
+    if (key.return && busy && input.trim() && !wizard && !pendingTool && !pendingAccess) {
+      const text = input.trim();
+      setInput(""); setHistIdx(-1); draftRef.current = "";
+      pushSupplement(text);
+      return;
+    }
     if (key.return && !busy && input.trim()) {
       let prompt = input; setInput(""); setHistIdx(-1); draftRef.current = "";
       if (prompt.startsWith(":")) {
@@ -828,6 +843,8 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
           },
           onToolCall: (n, a) => { const line = `→ ${n} ${JSON.stringify(a).slice(0, 120)}`; toolLog.push(line); pushSystem(line); }, onToolResult: (n, r) => { pushSystem(`← ${n}: ${r.slice(0, 120)}`); },
           onContext: (tok) => { setCtxUsed(tok); },
+          supplementQueue: supplementsRef.current,
+          onSupplement: (content) => { pushSystem(`⇪ Supplement delivered: "${content.replace("[user supplement while working] ", "").slice(0, 80)}${content.length > 88 ? "…" : ""}"`); },
         }, (u) => {
           if (u.inputTokens > 0) { usageSent = true; bumpTokens(modelId, u.inputTokens, 0); }
           if (u.outputTokens > 0) { usageRecv = true; bumpTokens(modelId, 0, u.outputTokens); }
@@ -866,7 +883,11 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
           if (copy[copy.length - 1]?.role === "assistant" && !copy[copy.length - 1].text) copy.pop();
           return copy;
         });
-      } finally { abortRef.current = null; countLOC().then(setLoc); setBusy(false); setScroll(0); }
+      } finally {
+        abortRef.current = null; countLOC().then(setLoc); setBusy(false); setScroll(0);
+        if (supplementsRef.current.length) pushSystem(`⚠ ${supplementsRef.current.length} supplement(s) not delivered (run ended) — resend or press ↑ to recover:\n${supplementsRef.current.map((s, i) => `  ${i + 1}. ${s}`).join("\n")}`);
+        supplementsRef.current = []; setSupplements([]);
+      }
     } else if (key.backspace || key.delete) { setInput((s) => s.slice(0, -1)); }
     else if (key.upArrow) {
       if (cmdHistory.length === 0) return;
@@ -939,8 +960,8 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
         <Box flexDirection="row" justifyContent="space-between" width={innerW}>
           <Box flexDirection="row" flexWrap="wrap">
             <Text color={wizard ? "cyan" : isCmd ? "yellow" : "magenta"} bold>{wizard ? "⚙" : isCmd ? ":" : "›"} </Text>
-            <Text color={wizard ? "cyan" : busy ? "gray" : isCmd ? "yellow" : "yellow"} wrap="wrap">{wizard ? wizardPrompt(wizard) : busy ? (pendingTool ? "" : "(busy…)") : isCmd ? input.slice(1) : input}{suggestion && !busy && !wizard ? <Text dimColor>{suggestion}</Text> : null}</Text>
-            {!wizard && <Text backgroundColor={busy ? undefined : isCmd ? "yellow" : "white"} color={isCmd ? "black" : "white"}> </Text>}
+            <Text color={wizard ? "cyan" : busy ? "gray" : isCmd ? "yellow" : "yellow"} wrap="wrap">{wizard ? wizardPrompt(wizard) : busy ? (pendingTool ? "" : input) : isCmd ? input.slice(1) : input}{suggestion && !busy && !wizard ? <Text dimColor>{suggestion}</Text> : null}</Text>
+            {!wizard && <Text backgroundColor={busy ? "green" : undefined} color={isCmd ? "black" : "white"}> </Text>}
           </Box>
           <Text dimColor>{ctxUsed.toLocaleString("en-US")}/{ctxLabel} tok ({ctxPct}%){cfg.planMode ? <Text color="yellow" bold> · PLAN</Text> : null}</Text>
         </Box>
@@ -955,6 +976,12 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
           <Box flexDirection="column" marginTop={1}>
             <Text bold color="green">QUICK — 1-5 overwrites input (editable) · Esc/Ctrl+Q = close · Ctrl+S = save current input</Text>
             {formatQuick(quick).split("\n").map((ln) => <Text key={ln} color="green">{ln}</Text>)}
+          </Box>
+        )}
+        {supplements.length > 0 && (
+          <Box flexDirection="column" marginTop={1}>
+            <Text bold color="green">⇪ QUEUED SUPPLEMENTS ({supplements.length}) — delivered at next step boundary</Text>
+            {supplements.map((s, i) => <Text key={i} color="green" wrap="truncate">  {i + 1}. {s.slice(0, innerW - 8)}</Text>)}
           </Box>
         )}
         {pendingAccess && (
@@ -974,7 +1001,7 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
         {suggestion && !busy && <Box><Text dimColor>↹Tab → :{input.slice(1) + suggestion}  ↵Enter executes</Text></Box>}
         {input.length > innerW && <Box><Text dimColor>↔ {input.length}/{innerW} chars — wraps</Text></Box>}
       </Box>
-      <Box flexShrink={0}><Text dimColor wrap="wrap">↑↓ history {histIdx >= 0 ? `(${histIdx + 1}/${cmdHistory.length})` : ""} (editable) | PgUp/PgDn scroll | Ctrl+Q quick · Ctrl+S save | :models test {modelId} | {visibleLines.length}/{flatLines.length} lines{suggestion ? ` | :${input.slice(1) + suggestion}` : ""}</Text></Box>
+      <Box flexShrink={0}>        <Text dimColor wrap="wrap">↑↓ history {histIdx >= 0 ? `(${histIdx + 1}/${cmdHistory.length})` : ""} (editable) | PgUp/PgDn scroll | Ctrl+Q quick · Ctrl+S save | Enter while busy = queue supplement | :models test {modelId} | {visibleLines.length}/{flatLines.length} lines{suggestion ? ` | :${input.slice(1) + suggestion}` : ""}</Text></Box>
     </Box>
   );
 }

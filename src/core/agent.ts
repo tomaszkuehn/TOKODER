@@ -32,6 +32,10 @@ export type AgentOpts = {
   onToolCall?: (name: string, args: any) => void;
   onToolResult?: (name: string, result: string) => void;
   onContext?: (usedTokens: number) => void;
+  /** live queue: user supplements typed while the run is in progress; drained at step boundaries (mutate in place) */
+  supplementQueue?: string[];
+  /** called with the formatted user message each time supplements are injected into the conversation */
+  onSupplement?: (content: string) => void;
 };
 
 export type Usage = { inputTokens: number; outputTokens: number; totalTokens: number };
@@ -113,10 +117,20 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
   let lastHadTools = false;
   let nudged = false;
   let stepsUsed = 0;
+  /** drain supplements at step boundaries: format as "[user supplement while working] ..." user messages */
+  const drainQueue = () => {
+    if (!opts.supplementQueue?.length) return;
+    const items = opts.supplementQueue.splice(0);
+    const content = items.map((s) => `[user supplement while working] ${s}`).join("\n");
+    msgs.push({ role: "user", content });
+    opts.onSupplement?.(content);
+    logEntry("SUPPLEMENT", cfg.id, content);
+  };
   try {
     for (let step = 0; ; step++) {
       if (maxSteps > 0 && stepsUsed >= maxSteps) break;
       stepsUsed++;
+      drainQueue();
       logEntry("TO-MODEL", cfg.id, JSON.stringify({ step, messages: msgs }, null, 2));
       opts.onContext?.(estimateMsgsTokens(msgs));
       let result: any;
@@ -238,6 +252,7 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
         results.push({ type: "tool-result", toolCallId: c.toolCallId, toolName: c.toolName, output: { type: "text", value: output } });
       }
       msgs.push({ role: "tool", content: results });
+      drainQueue();
       restartTimer();
       lastHadTools = true;
     }
