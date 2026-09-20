@@ -1001,7 +1001,7 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
         {suggestion && !busy && <Box><Text dimColor>↹Tab → :{input.slice(1) + suggestion}  ↵Enter executes</Text></Box>}
         {input.length > innerW && <Box><Text dimColor>↔ {input.length}/{innerW} chars — wraps</Text></Box>}
       </Box>
-      <Box flexShrink={0}>        <Text dimColor wrap="wrap">↑↓ history {histIdx >= 0 ? `(${histIdx + 1}/${cmdHistory.length})` : ""} (editable) | PgUp/PgDn scroll | Ctrl+Q quick · Ctrl+S save | Enter while busy = queue supplement | :models test {modelId} | {visibleLines.length}/{flatLines.length} lines{suggestion ? ` | :${input.slice(1) + suggestion}` : ""}</Text></Box>
+      <Box flexShrink={0}><Text dimColor wrap="wrap">↑↓ history {histIdx >= 0 ? `(${histIdx + 1}/${cmdHistory.length})` : ""} (editable) | PgUp/PgDn scroll | Ctrl+Q quick · Ctrl+S save | Enter while busy = queue supplement | :models test {modelId} | {visibleLines.length}/{flatLines.length} lines{suggestion ? ` | :${input.slice(1) + suggestion}` : ""}</Text></Box>
     </Box>
   );
 }
