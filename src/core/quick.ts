@@ -1,7 +1,6 @@
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { homedir } from "node:os";
-import { createHash } from "node:crypto";
+import { appFile } from "../utils/paths.js";
 
 export type QuickSlot = { text: string; label: string; createdAt: string };
 /** slots 1-5, key = slot number as string */
@@ -9,11 +8,7 @@ export type QuickMap = Record<string, QuickSlot>;
 
 export const QUICK_SLOTS = 5;
 
-const quickPath = (cwd = process.cwd()): string => {
-  const home = homedir();
-  const hash = createHash("sha256").update(join(cwd).toLowerCase()).digest("hex").slice(0, 16);
-  return join(home, ".config", "tokoder", "quick", `${hash}.json`);
-};
+const quickPath = (cwd = process.cwd()): string => appFile("quick.json", cwd);
 
 export function loadQuick(cwd = process.cwd()): QuickMap {
   try {

@@ -77,6 +77,9 @@ const DEFAULTS: TokoderConfig = {
 
 const CANDIDATES = ["tokoder.config.json", ".tokoder.json"];
 
+/** local config: project root first (committed with the repo), .tokoder/ fallback */
+export const LOCAL_CONFIG_PATH = (cwd = process.cwd()) => resolve(cwd, CANDIDATES[0]);
+
 export function globalConfigPath(): string {
   const home = process.env.USERPROFILE ?? process.env.HOME ?? ".";
   return join(home, ".config", "tokoder", "config.json");
@@ -87,7 +90,8 @@ export function localConfigPath(cwd = process.cwd()): string | null {
     const p = resolve(cwd, name);
     if (existsSync(p)) return p;
   }
-  return null;
+  const hidden = resolve(cwd, ".tokoder", "config.json");
+  return existsSync(hidden) ? hidden : null;
 }
 
 function readJson(p: string): any | null {
@@ -131,8 +135,9 @@ export function loadConfig(cwd = process.cwd()): TokoderConfig {
 
 export function saveConfig(cfg: TokoderConfig, cwd = process.cwd(), scope?: "global" | "local"): string {
   const lp = localConfigPath(cwd);
-  const s = scope ?? (lp ? "local" : "global");
-  const p = s === "global" ? globalConfigPath() : lp ?? resolve(cwd, "tokoder.config.json");
+  const s = scope ?? (lp && !lp.includes(".tokoder") ? "local" : existsSync(resolve(cwd, ".tokoder", "config.json")) ? "local" : "global");
+  const p = s === "global" ? globalConfigPath() : (lp && !lp.includes(".tokoder") ? lp : resolve(cwd, ".tokoder", "config.json"));
+  mkdirSync(dirname(p), { recursive: true });
   if (s === "global") mkdirSync(dirname(p), { recursive: true });
   const clean = { ...cfg, models: cfg.models.map((m) => { const { source: _src, ...rest } = m; return rest; }) };
   writeFileSync(p, JSON.stringify(clean, null, 2) + "\n", "utf-8");

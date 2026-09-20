@@ -1,12 +1,13 @@
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { resolve, dirname } from "node:path";
 
 export function getEnvPath(cwd = process.cwd()): string {
-  return resolve(cwd, ".env");
+  return resolve(cwd, ".tokoder", ".env");
 }
 
 export function setEnvKey(key: string, value: string, cwd = process.cwd()): void {
   const p = getEnvPath(cwd);
+  if (!existsSync(p)) mkdirSync(dirname(p), { recursive: true });
   const content = existsSync(p) ? readFileSync(p, "utf-8") : "";
   const lines = content.split("\n");
   const keyRe = new RegExp(`^\\s*${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\s*=)`);

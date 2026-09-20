@@ -5,9 +5,9 @@ AI coding agent for the terminal — clone of [opencode](https://github.com/anom
 ## Features
 
 - **Agent loop** with tool calling (`read`, `write`, `edit`, `bash`, `glob`, `grep`) — manual multi-step loop (`stepCountIs`), 300s timeout per step, typed errors, always replies even if text empty
-- **Session memory** — model + conversation context are auto-saved per folder after each turn (`~/.config/tokoder/sessions/<folder-hash>.json`). Start `tocoder -c` to resume the last session in this folder (restores model and history); `:session reset` clears it
+- **Session memory** — model + conversation context are auto-saved per project after each turn (`.tokoder/sessions/`). Start `tocoder -c` to resume the last session in this folder (restores model and history); `:session reset` clears it
 - **Tool approval** — in-project targets run automatically; only `bash` commands touching absolute/`~`/`$env:` paths or out-of-project workdirs ask `[Y]es / [N]o / [A]bort run` (Shift+A = always for that tool this session); Esc aborts the run
-- **ACL sandbox** — full access inside `cwd`; outside: Windows system folders always denied, per-mode rules (read/write/execute) persisted across sessions in `~/.config/tokoder/access-rules.json`; on first access outside rules the app asks `[P]File / [F]Parent folder / [N]o / [A]bort` and auto-retries the tool. Manage with `:acl`, `:acl set <mode> <yes|no>`, `:allow <path> [read|write|execute]`, `:deny <path>`
+- **ACL sandbox** — full access inside `cwd`; outside: Windows system folders always denied, per-mode rules (read/write/execute) persisted per project in `.tokoder/access-rules.json` (first run seeds from global `~/.config/tokoder/access-rules.json`); on first access outside rules the app asks `[P]File / [F]Parent folder / [N]o / [A]bort` and auto-retries the tool. Manage with `:acl`, `:acl set <mode> <yes|no>`, `:allow <path> [read|write|execute]`, `:deny <path>`
 - **Multi-model** — models via `tokoder.config.json` (Anthropic / OpenAI / OpenRouter / Ollama local + Ollama Cloud)
 - **Interactive `:models add` wizard** — local/cloud Ollama with live model listing (`/api/tags`), auto-suggested free id (overridable); cloud requires key set first via `:key`
 - **Per-model token counters** — `id (1.1k↑/3.4k↓)` next to every model in header (0↑/0↓ when unused), `↑ sent ↓ recv` for active model + `∑` total, counted until app exit; real `usage` from provider per agent step, `len/4` fallback
@@ -29,14 +29,36 @@ AI coding agent for the terminal — clone of [opencode](https://github.com/anom
 ## Install
 
 ```bash
+git clone <repo-url> && cd tokoder
 npm install
-npm run build
-npm link        # exposes `tocoder` and `tokoder` globally
+npm run install:global   # build + npm link + global settings (~/.config/tokoder)
 ```
+
+`npm run install:global` (= `node scripts/install.mjs`):
+1. builds the app (`tsc`) if `dist/` missing
+2. `npm link` → global commands `tokoder` / `tocoder`
+3. creates `~/.config/tokoder/` with:
+   - `config.json` — global model roster (seeded from repo `tokoder.config.json`)
+   - `access-rules.json` — default ACL rules (seeded into every new project)
+   - `.env` — global API keys template
+4. verifies install; re-runs are idempotent (nothing is overwritten)
+
+Update: `git pull && npm run install:global` (or `npm install && npm run build` if only code changed).
 
 ## Configuration
 
-### API keys — `.env` (see `.env.example`)
+### Settings layout
+
+| Scope | Location | Contents |
+|-------|----------|----------|
+| **Global** | `~/.config/tokoder/` | `config.json` (models + defaultModel), `access-rules.json` (defaults for new projects), `.env` (API keys) |
+| **Per-project** | `<project>/.tokoder/` | `.env`, `access-rules.json`, `quick.json`, `sessions/`, `tocoder.log` |
+
+Running `tokoder` in any folder **auto-creates `.tokoder/`** on first run, pre-filled with defaults (rules seeded from global; existing files never overwritten). Add `.tokoder/` to `.gitignore`.
+
+### API keys — `.tokoder/.env` (project) + `~/.config/tokoder/.env` (global)
+
+Loaded at startup: project file first, global second (project wins on conflicts). Keys saved via `:models key` go to `.tokoder/.env` in the current project.
 
 ```
 ANTHROPIC_API_KEY=sk-ant-...
@@ -49,7 +71,7 @@ OPENROUTER_API_KEY=sk-or-...
 Config loads from **two places** and merges:
 
 1. **Global** — `~/.config/tokoder/config.json` (shared model roster; `tocoder` runs anywhere)
-2. **Project-local** — `tokoder.config.json` in the folder (project overrides)
+2. **Project-local** — `tokoder.config.json` in the folder root (committed with the repo, shared by the team; fallback: `.tokoder/config.json`)
 
 Local models override global entries with the same id and can add new ones; local also wins for `defaultModel` and `compact`. Writes go to the local file when one exists in the project, otherwise to the global file — `:models save global|local` copies the merged config explicitly.
 
@@ -126,7 +148,7 @@ scripts/tocoder.bat "prompt"
 | `:models add <id> <provider> <model> [baseURL]` | manual add |
 | `:models rm` | **interactive remove** — pick from list, `y/n` confirm |
 | `:models default <id>` | set default |
-| `:models key <id> <API_KEY>` | save to `.env` |
+| `:models key <id> <API_KEY>` | save to `.tokoder/.env` |
 | `:models test [id]` | diagnose connection (`/api/tags`) |
 | `:models save <global\|local>` | copy the merged config to the chosen file |
 | `:models set <id> <field> <value>` | edit field |
@@ -177,7 +199,7 @@ History compaction replaces old turns with a model-generated summary + keeps rec
   - Per-path exceptions with mode (`r:`/`w:`/`x:`)
 - When a tool hits a path outside rules, the app asks: `[P]File` (this file only), `[F]Parent folder` (parent dir), `[N]o`, `[A]bort run` — then auto-retries the tool call on grant.
 - Access requests use an internal NUL-delimited marker protocol (`TOCODER_ACL_REQ`), not text sniffing — reading files that mention ACL internals never triggers false prompts.
-- All rules persist across sessions in `%USERPROFILE%\.config\tokoder\access-rules.json`.
+- All rules persist per project in `.tokoder/access-rules.json` (first run seeds from `~/.config/tokoder/access-rules.json`).
 
 ## TUI Layout
 
@@ -218,7 +240,7 @@ History compaction replaces old turns with a model-generated summary + keeps rec
 
 **Choice `1`-`9` ignored** — now expands quoting the option text from the model's last list, with 20-turn history.
 
-**Builds outside folder** — ACL: system folders always denied; outside rules → app asks `[P]File/[F]Parent/[N]o/[A]bort` and auto-retries. Defaults `read=YES, write=NO, execute=NO`; change via `:acl set <mode> <yes|no>`, per-path `:allow <path> [mode]`. Rules live in `~/.config/tokoder/access-rules.json`.
+**Builds outside folder** — ACL: system folders always denied; outside rules → app asks `[P]File/[F]Parent/[N]o/[A]bort` and auto-retries. Defaults `read=YES, write=NO, execute=NO`; change via `:acl set <mode> <yes|no>`, per-path `:allow <path> [mode]`. Rules live per project in `.tokoder/access-rules.json`.
 
 **bash killed instantly, empty `Error (exit ?)`** — the bash tool `timeout` is in **seconds** (default 30, cap 600). Older builds treated it as ms. Killed commands now return an explicit "killed after Ns timeout" hint.
 
@@ -243,23 +265,27 @@ Common: `404` → wrong `model`; `ECONNREFUSED` → not running; `401` → wrong
 
 ```
 src/
-  cli.ts              # commander CLI (tocoder), dotenv, -c/--continue, --timeout
+  cli.ts              # commander CLI (tocoder), dotenv (project+global), bootstrap, -c/--continue, --timeout
   core/
     agent.ts          # manual step loop (stepCountIs 1 + msgs re-feed), tool approval + abort, ACL marker protocol, timeout per step, testConnection
+    bootstrap.ts      # idempotent .tokoder/ creation with default settings at CLI startup
     config.ts         # load/save tokoder.config.json (global+local merge), compact config + limits
     compact.ts        # compactHistory (reduce/balance/value), estimateHistoryTokens
     instructions.ts   # AGENTS.md — read/init/append/remove + system-prompt injection
     providers.ts      # getModelFromConfig
-    session.ts        # per-folder session persistence (model + history), ~  /.config/tokoder/sessions/<hash>.json
+    session.ts        # per-project session persistence (.tokoder/sessions/)
+    quick.ts          # quick commands slots 1-5 (.tokoder/quick.json)
   tools/              # read / write / edit / bash / glob / grep (ACL-guarded); agentTools (schemas) + executors
   tui/App.tsx         # Ink 3-panel, vim, autocomplete, editable history, auto-scroll + scrollbar, tool approval + ACL prompt (abort), per-model token stats, :models add/rm wizards, auto-compact
   utils/
-    stats.ts          # LOC + env + duration
-    env.ts            # .env set/mask
-    logger.ts         # structured log entries (logs/ dir)
+    paths.ts          # appDir/appFile (.tokoder/) + globalAppDir (~/.config/tokoder)
+    stats.ts          # LOC + env + duration (ignores .tokoder)
+    env.ts            # .tokoder/.env set/mask
+    logger.ts         # .tokoder/tocoder.log
     ollama.ts         # listOllamaModels (local/cloud), id suggestion
-    permissions.ts    # checkAccess (ACL modes), rules persistence, accessRequest marker, guard, allow/deny
+    permissions.ts    # checkAccess (ACL modes), per-project rules (seeded from global), accessRequest marker, guard, allow/deny
 scripts/
+  install.mjs         # installer: build + npm link + global settings (~/.config/tokoder)
   tocoder.ps1 / .sh / .bat (and tokoder aliases)
 tokoder.config.json
 ```
@@ -271,6 +297,8 @@ npm run dev            # tsx src/cli.ts
 npm run dev:all        # --all
 npm run typecheck
 npm run build
+npm test               # vitest
+npm run install:global # installer (build + link + global settings)
 ```
 
 ## License

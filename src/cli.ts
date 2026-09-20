@@ -1,5 +1,11 @@
 #!/usr/bin/env node
-import "dotenv/config";
+import dotenv from "dotenv";
+import { getEnvPath } from "./utils/env.js";
+import { globalAppDir } from "./utils/paths.js";
+import { bootstrapProject } from "./core/bootstrap.js";
+dotenv.config({ path: getEnvPath(), quiet: true });
+dotenv.config({ path: globalAppDir() + "/.env", override: false, quiet: true });
+bootstrapProject();
 import { Command } from "commander";
 import React from "react";
 import { render } from "ink";

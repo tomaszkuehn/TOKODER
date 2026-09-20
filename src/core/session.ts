@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { resolve, join } from "node:path";
-import { homedir } from "node:os";
 import { createHash } from "node:crypto";
+import { appDir } from "../utils/paths.js";
 
 export type SessionState = {
   version: 1;
@@ -12,15 +12,12 @@ export type SessionState = {
   history: { role: "user" | "assistant"; content: string }[];
 };
 
-const SESSIONS_DIR = () => {
-  const home = process.env.USERPROFILE ?? process.env.HOME ?? ".";
-  return join(home, ".config", "tokoder", "sessions");
-};
+const SESSIONS_DIR = (cwd = process.cwd()) => join(appDir(cwd), "sessions");
 
 const hashKey = (cwd: string) => createHash("sha256").update(resolve(cwd).toLowerCase()).digest("hex").slice(0, 16);
 
 export function sessionPath(cwd = process.cwd()): string {
-  return join(SESSIONS_DIR(), `${hashKey(cwd)}.json`);
+  return join(SESSIONS_DIR(cwd), `${hashKey(cwd)}.json`);
 }
 
 export function sessionExists(cwd = process.cwd()): boolean {
@@ -38,7 +35,7 @@ export function loadSession(cwd = process.cwd()): SessionState | null {
 }
 
 export function saveSession(s: Omit<SessionState, "version" | "cwd" | "updatedAt">, cwd = process.cwd()): string {
-  const dir = SESSIONS_DIR();
+  const dir = SESSIONS_DIR(cwd);
   mkdirSync(dir, { recursive: true });
   const state: SessionState = {
     version: 1,

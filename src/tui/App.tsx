@@ -470,7 +470,7 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
         if (!m) { pushSystem(`Not found: ${id}`); return true; }
         const envKey = m.apiKeyEnv ?? `${id.toUpperCase().replace(/-/g, "_")}_API_KEY`;
         if (!m.apiKeyEnv) { m.apiKeyEnv = envKey; saveConfig(cur); }
-        setEnvKey(envKey, key.trim()); reloadCfg(); pushSystem(`Key saved for ${id} → ${envKey} (${maskKey(key)}) in .env — run :models test ${id}`); return true;
+        setEnvKey(envKey, key.trim()); reloadCfg();       pushSystem(`Key saved for ${id} → ${envKey} (${maskKey(key)}) in .tokoder/.env — run :models test ${id}`); return true;
       }
       if (sub === "save") {
         const scope = args[1]?.toLowerCase() === "global" ? "global" : args[1]?.toLowerCase() === "local" ? "local" : undefined;

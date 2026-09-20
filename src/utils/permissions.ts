@@ -1,6 +1,6 @@
 import { resolve, relative, isAbsolute, dirname } from "node:path";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { homedir } from "node:os";
+import { appDir, appFile, globalAppDir } from "./paths.js";
 
 export type AccessMode = "read" | "write" | "execute";
 
@@ -11,16 +11,41 @@ export type AccessRules = {
   paths: { path: string; mode: AccessMode }[];
 };
 
-const RULES_PATH = resolve(homedir(), ".config", "tokoder", "access-rules.json");
+/** access rules are project-local (in .tokoder/); global defaults seed new projects */
+const LOCAL_RULES_FILE = "access-rules.json";
+const rulesFile = (cwd = process.cwd()): string => appFile(LOCAL_RULES_FILE, cwd);
+const globalRulesPath = (): string => resolve(globalAppDir(), LOCAL_RULES_FILE);
 
 let rules: AccessRules | null = null;
 
-export function loadRules(): AccessRules {
-  if (rules) return rules;
-  let parsed: Partial<AccessRules> | null = null;
+function seedRules(cwd: string): Partial<AccessRules> | null {
+  const local = rulesFile(cwd);
+  if (existsSync(local)) {
+    try {
+      return JSON.parse(readFileSync(local, "utf-8"));
+    } catch {}
+  }
+  // first run in this project → seed from global defaults, then persist locally
+  let seeded: Partial<AccessRules> | null = null;
   try {
-    parsed = JSON.parse(readFileSync(RULES_PATH, "utf-8"));
+    seeded = JSON.parse(readFileSync(globalRulesPath(), "utf-8"));
   } catch {}
+  const r = {
+    read: seeded?.read ?? true,
+    write: seeded?.write ?? false,
+    execute: seeded?.execute ?? false,
+    paths: seeded?.paths ?? [],
+  };
+  try {
+    mkdirSync(appDir(cwd), { recursive: true });
+    writeFileSync(local, JSON.stringify(r, null, 2) + "\n", "utf-8");
+  } catch {}
+  return r;
+}
+
+export function loadRules(cwd = process.cwd()): AccessRules {
+  if (rules) return rules;
+  const parsed = seedRules(cwd);
   rules = {
     read: parsed?.read ?? true,
     write: parsed?.write ?? false,
@@ -30,14 +55,15 @@ export function loadRules(): AccessRules {
   return rules;
 }
 
-export function saveRules(): void {
-  const r = loadRules();
-  mkdirSync(dirname(RULES_PATH), { recursive: true });
-  writeFileSync(RULES_PATH, JSON.stringify(r, null, 2) + "\n", "utf-8");
+export function saveRules(cwd = process.cwd()): void {
+  const r = loadRules(cwd);
+  const p = rulesFile(cwd);
+  mkdirSync(appDir(cwd), { recursive: true });
+  writeFileSync(p, JSON.stringify(r, null, 2) + "\n", "utf-8");
 }
 
-export function rulesPath(): string {
-  return RULES_PATH;
+export function rulesPath(cwd = process.cwd()): string {
+  return rulesFile(cwd);
 }
 
 function isSystemPath(abs: string): boolean {

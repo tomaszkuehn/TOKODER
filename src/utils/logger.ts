@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 
 const LOG_PATH = process.env.TOCODER_LOG
   ? resolve(process.env.TOCODER_LOG)
-  : resolve(process.cwd(), "tocoder.log");
+  : resolve(process.cwd(), ".tokoder", "tocoder.log");
 
 export function logPath(): string {
   return LOG_PATH;

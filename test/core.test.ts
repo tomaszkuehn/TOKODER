@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { screenCommand } from "../src/tools/bash.js";
 import { setEnvKey } from "../src/utils/env.js";
 import { loadQuick, saveQuick, setQuickSlot, formatQuick } from "../src/core/quick.js";
-import { readFileSync, writeFileSync, mkdtempSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdtempSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -54,7 +54,8 @@ describe("screenCommand", () => {
 describe("setEnvKey", () => {
   it("sets key preserving comments and quotes", () => {
     const dir = mkdtempSync(join(tmpdir(), "env-"));
-    const file = join(dir, ".env");
+    const file = join(dir, ".tokoder", ".env");
+    mkdirSync(join(dir, ".tokoder"), { recursive: true });
     writeFileSync(file, "# my comment\nFOO=bar\nQUOTED='single'\n");
     setEnvKey("NEW_KEY", "val", dir);
     const out = readFileSync(file, "utf-8");
@@ -66,7 +67,8 @@ describe("setEnvKey", () => {
 
   it("replaces existing key", () => {
     const dir = mkdtempSync(join(tmpdir(), "env-"));
-    const file = join(dir, ".env");
+    const file = join(dir, ".tokoder", ".env");
+    mkdirSync(join(dir, ".tokoder"), { recursive: true });
     writeFileSync(file, "OLD=1\nOTHER=keep\n");
     setEnvKey("OLD", "2", dir);
     const out = readFileSync(file, "utf-8");

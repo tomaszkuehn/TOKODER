@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 
 const CODE_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".json", ".css", ".md", ".py", ".go", ".rs", ".java", ".kt"]);
-const IGNORE = new Set(["node_modules", "dist", ".git", ".ijfw", "build", ".next", "coverage", "__pycache__"]);
+const IGNORE = new Set(["node_modules", "dist", ".git", ".ijfw", ".tokoder", "build", ".next", "coverage", "__pycache__"]);
 
 export async function countLOC(root = process.cwd()): Promise<number> {
   let total = 0;

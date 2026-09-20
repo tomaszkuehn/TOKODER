@@ -28,5 +28,7 @@
     "autoTrigger": true,
     "thresholdPercent": 20,
     "maxTokens": 20000
-  }
+  },
+  "maxSteps": 42,
+  "planMode": false
 }

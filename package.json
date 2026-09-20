@@ -1,40 +1,41 @@
 {
-    "name":  "tokoder",
-    "version":  "0.1.0",
-    "description":  "AI coding agent - opencode/claude-code clone",
-    "license":  "MIT",
-    "type":  "module",
-    "bin":  {
-                "tokoder":  "./dist/cli.js",
-                "tocoder":  "./dist/cli.js"
-            },
-    "scripts":  {
-                    "dev":  "tsx src/cli.ts",
-                    "dev:all":  "tsx src/cli.ts --all",
-                    "build":  "tsc",
-                    "start":  "node dist/cli.js",
-                    "models":  "node dist/cli.js models",
-                    "tokoder":  "node dist/cli.js",
-                    "tocoder":  "node dist/cli.js",
-                    "typecheck":  "tsc --noEmit",
-                    "test":  "vitest run"
-                },
-    "dependencies":  {
-                         "@ai-sdk/anthropic":  "^4.0.58",
-                         "@ai-sdk/openai":  "^4.0.71",
-                         "ai":  "^7.0.107",
-                         "chalk":  "^5.4.1",
-                         "commander":  "^13.1.0",
-                         "dotenv":  "^18.0.1",
-                         "ink":  "^5.2.1",
-                         "react":  "^18.3.1",
-                         "zod":  "^3.25.76"
-                     },
-    "devDependencies":  {
-                            "@types/node":  "^22.15.0",
-                            "@types/react":  "^18.3.12",
-                            "tsx":  "^4.19.4",
-                            "typescript":  "^5.8.3",
-                            "vitest":  "^3.2.4"
-                        }
+    "name": "tokoder",
+    "version": "0.1.0",
+    "description": "AI coding agent - opencode/claude-code clone",
+    "license": "MIT",
+    "type": "module",
+    "bin": {
+        "tokoder": "./dist/cli.js",
+        "tocoder": "./dist/cli.js"
+    },
+    "scripts": {
+        "dev": "tsx src/cli.ts",
+        "dev:all": "tsx src/cli.ts --all",
+        "build": "tsc",
+        "start": "node dist/cli.js",
+        "models": "node dist/cli.js models",
+        "tokoder": "node dist/cli.js",
+        "tocoder": "node dist/cli.js",
+        "typecheck": "tsc --noEmit",
+        "test": "vitest run",
+        "install:global": "node scripts/install.mjs"
+    },
+    "dependencies": {
+        "@ai-sdk/anthropic": "^4.0.58",
+        "@ai-sdk/openai": "^4.0.71",
+        "ai": "^7.0.107",
+        "chalk": "^5.4.1",
+        "commander": "^13.1.0",
+        "dotenv": "^18.0.1",
+        "ink": "^5.2.1",
+        "react": "^18.3.1",
+        "zod": "^3.25.76"
+    },
+    "devDependencies": {
+        "@types/node": "^22.15.0",
+        "@types/react": "^18.3.12",
+        "tsx": "^4.19.4",
+        "typescript": "^5.8.3",
+        "vitest": "^5.0.1"
+    }
 }

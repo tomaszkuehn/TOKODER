@@ -14,3 +14,4 @@ out/
 nul
 access-rules.json
 tokoder.config.local.json
+.tokoder/
