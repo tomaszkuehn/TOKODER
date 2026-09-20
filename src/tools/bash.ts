@@ -17,6 +17,18 @@ function normalizeTarget(raw: string): string {
   return resolve(raw);
 }
 
+/** read-only commands (no side effects) — access-checked with "read" mode instead of "write" */
+const BASH_READ_ONLY = new RegExp(
+  String.raw`^(type|cat|Get-Content|gc|dir|ls|Get-ChildItem|gci|Select-String|sls|findstr|grep|head|tail|wc|git\s+(log|diff|status|show|branch|blame)|node\s+(--version|-v)|npm\s+(run|test|ls|outdated|view)|echo(?!.*>)|pwd|whoami|hostname|where|which|Get-Date|Get-Location|Test-Path|wsl\s+(-l|--version)|ollama\s+list)\b`,
+  "i",
+);
+
+/** commands with side effects (mutating / network / process control) — always require write access for referenced targets */
+const BASH_MUTATING = new RegExp(
+  String.raw`(>|Out-File|Set-Content|Add-Content|Tee-Object|Remove-Item|\brm\b|\bdel\b|rmdir|\bmv\b|Move-Item|Copy-Item|New-Item|\btouch\b|git\s+(add|commit|push|reset|checkout|restore|clean|merge|rebase)|npm\s+(install|\bi\b|\badd\b|remove|uninstall|update|upgrade|publish|link)|pip\b|cargo\b|dotnet\b|apt\b|choco\b|winget\b|scoop\b|Invoke-WebRequest|\bcurl\b|\bwget\b|Start-Process|Stop-Process|taskkill|\breg\b|regedit|format|diskpart|icacls|attrib)`,
+  "i",
+);
+
 /** screens a raw bash command for out-of-project targets before execution (sandbox layer) */
 export function screenCommand(command: string): string | null {
   if (/(^|[\s"'`\x60;|&\\/])\.\.([\s"'`\x60;=|&\\/]|$)/.test(command)) {
@@ -25,6 +37,8 @@ export function screenCommand(command: string): string | null {
   if (/(^|[\s"'`\x60;|&])\/(\s|$)/.test(command)) {
     return `Error: command references filesystem root "/" — sandbox forbids touching it.`;
   }
+  const mutating = BASH_MUTATING.test(command);
+  const readOnly = !mutating && BASH_READ_ONLY.test(command);
   const targets: string[] = [];
   for (const m of command.matchAll(new RegExp(`(?<![\\w])[A-Za-z]:[\\\\/]${T}`, "g"))) targets.push(m[0]);
   for (const m of command.matchAll(new RegExp(`\\\\\\\\${T}`, "g"))) targets.push(m[0]);
@@ -33,10 +47,11 @@ export function screenCommand(command: string): string | null {
   for (const m of command.matchAll(/(?<![\w~:/])\/(?:mnt\/[A-Za-z](?:\/[^\s"'`;|&<>),]*)?|[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[^\s"'`;|&<>),]*)?)/g)) targets.push(m[0]);
   for (const raw of targets) {
     const p = normalizeTarget(raw);
-    const chk = checkAccess(p, "write");
+    // read-only commands may access paths the rules allow for READ (read=true by default); mutating ones need write
+    const chk = checkAccess(p, mutating ? "write" : readOnly ? "read" : "write");
     if (chk.ok) continue;
     if (chk.reason === "system") return `Error: DENIED — command touches a Windows system folder ("${raw}"). Never accessible.`;
-    return accessRequest("write", p, `PENDING-APPROVAL: bash command references "${raw}" (→ ${p}) outside the project. User decision required.`);
+    return accessRequest(chk.needs, p, `PENDING-APPROVAL: bash command references "${raw}" (→ ${p}) outside the project (${chk.needs}=NO by default). User decision required.`);
   }
   return null;
 }

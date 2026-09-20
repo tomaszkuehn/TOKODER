@@ -148,9 +148,9 @@ export function listAllowed(): string[] {
   return loadRules().paths.map((e) => `${e.mode === "read" ? "r" : e.mode === "write" ? "w" : "x"}:${e.path}`);
 }
 
-export function guard(target: string): string | null {
-  const res = checkAccess(target, "write");
+export function guard(target: string, mode: AccessMode = "write"): string | null {
+  const res = checkAccess(target, mode);
   if (res.ok) return null;
   if (res.reason === "system") return `DENIED: "${target}" is inside Windows system folder — never accessible.`;
-  return accessRequest("write", target, `PENDING-APPROVAL: "${target}" outside project (write=NO by default). User decision required via approval prompt or :acl.`);
+  return accessRequest(mode, target, `PENDING-APPROVAL: "${target}" outside project (${mode}=NO by default). User decision required via approval prompt or :acl.`);
 }

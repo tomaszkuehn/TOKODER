@@ -6,7 +6,8 @@ AI coding agent for the terminal — clone of [opencode](https://github.com/anom
 
 - **Agent loop** with tool calling (`read`, `write`, `edit`, `bash`, `glob`, `grep`) — manual multi-step loop (`stepCountIs`), 300s timeout per step, typed errors, always replies even if text empty
 - **Session memory** — model + conversation context are auto-saved per project after each turn (`.tokoder/sessions/`). Start `tocoder -c` to resume the last session in this folder (restores model and history); `:session reset` clears it
-- **Tool approval** — in-project targets run automatically; only `bash` commands touching absolute/`~`/`$env:` paths or out-of-project workdirs ask `[Y]es / [N]o / [A]bort run` (Shift+A = always for that tool this session); Esc aborts the run
+- **Tool approval** — in-project targets run automatically; only `bash` commands touching absolute/`~`/`$env:` paths or out-of-project workdirs ask `[Y]es / [N]o / [A]bort run` (Shift+A = always for that tool this session); Esc aborts the run. **Read-only bash commands** (`cat`, `type`, `dir`, `git log`, `npm test`, …) don't prompt — they go through `read` rules (unlimited read by default); mutating commands (`>` redirect, `Remove-Item`, `git commit`, `npm install`, `curl`, …) prompt only when they reference paths outside the project
+- **Markdown rendering** — model answers render as colored markdown in the terminal: headings (`▌` cyan bold), bold/italic, `inline code` + fenced code blocks (green), bullet/numbered lists, blockquotes, tables, links; ANSI-aware wrapping keeps colors intact across wrapped lines; transcript dump keeps colors too
 - **ACL sandbox** — full access inside `cwd`; outside: Windows system folders always denied, per-mode rules (read/write/execute) persisted per project in `.tokoder/access-rules.json` (first run seeds from global `~/.config/tokoder/access-rules.json`); on first access outside rules the app asks `[P]File / [F]Parent folder / [N]o / [A]bort` and auto-retries the tool. Manage with `:acl`, `:acl set <mode> <yes|no>`, `:allow <path> [read|write|execute]`, `:deny <path>`
 - **Multi-model** — models via `tokoder.config.json` (Anthropic / OpenAI / OpenRouter / Ollama local + Ollama Cloud)
 - **Interactive `:models add` wizard** — local/cloud Ollama with live model listing (`/api/tags`), auto-suggested free id (overridable); cloud requires key set first via `:key`
@@ -192,11 +193,12 @@ History compaction replaces old turns with a model-generated summary + keeps rec
 
 ## Access Control (ACL)
 
-- **Inside `cwd`**: always full access (read/write/execute).
+- **Inside `cwd`** (incl. subfolders): always full access (read/write/execute) — no prompts.
 - **Outside `cwd`**:
-  - Windows system folders (`C:\Windows`, `Program Files`, `ProgramData`) — never accessible
-  - Global defaults: `read=YES`, `write=NO`, `execute=NO`
+  - Windows system folders (`C:\Windows`, `Program Files`, `ProgramData`) — never accessible (even read)
+  - Defaults: **unlimited `read` everywhere** (`read=YES`), `write=NO`, `execute=NO`
   - Per-path exceptions with mode (`r:`/`w:`/`x:`)
+- **Bash commands are mode-classified** (`src/tools/bash.ts`): read-only commands (`cat`, `type`, `dir`, `git log|diff|status`, `npm run/test`, `ollama list`, …) are checked against `read` rules → no prompt anywhere by default; mutating commands (`>`/`Out-File` redirects, `Remove-Item`/`rm`/`del`, `Move-Item`, `git add|commit|push`, `npm install`, `curl`, `taskkill`, …) and unknown commands are checked against `write` rules → prompt when they reference paths outside the project
 - When a tool hits a path outside rules, the app asks: `[P]File` (this file only), `[F]Parent folder` (parent dir), `[N]o`, `[A]bort run` — then auto-retries the tool call on grant.
 - Access requests use an internal NUL-delimited marker protocol (`TOCODER_ACL_REQ`), not text sniffing — reading files that mention ACL internals never triggers false prompts.
 - All rules persist per project in `.tokoder/access-rules.json` (first run seeds from `~/.config/tokoder/access-rules.json`).
@@ -275,15 +277,16 @@ src/
     providers.ts      # getModelFromConfig
     session.ts        # per-project session persistence (.tokoder/sessions/)
     quick.ts          # quick commands slots 1-5 (.tokoder/quick.json)
-  tools/              # read / write / edit / bash / glob / grep (ACL-guarded); agentTools (schemas) + executors
-  tui/App.tsx         # Ink 3-panel, vim, autocomplete, editable history, auto-scroll + scrollbar, tool approval + ACL prompt (abort), per-model token stats, :models add/rm wizards, auto-compact
+  tools/              # read / write / edit / bash / glob / grep (ACL-guarded); agentTools (schemas) + executors; bash screenCommand mode-classifies commands (read vs write rules)
+  tui/App.tsx         # Ink 3-panel, vim, autocomplete, editable history, auto-scroll + scrollbar, tool approval + ACL prompt (abort), per-model token stats, :models add/rm wizards, auto-compact, markdown output
   utils/
     paths.ts          # appDir/appFile (.tokoder/) + globalAppDir (~/.config/tokoder)
     stats.ts          # LOC + env + duration (ignores .tokoder)
     env.ts            # .tokoder/.env set/mask
     logger.ts         # .tokoder/tocoder.log
+    markdown.ts       # terminal markdown renderer with ANSI colors (headings/code/lists/tables/quotes/links)
     ollama.ts         # listOllamaModels (local/cloud), id suggestion
-    permissions.ts    # checkAccess (ACL modes), per-project rules (seeded from global), accessRequest marker, guard, allow/deny
+    permissions.ts    # checkAccess (ACL modes), per-project rules (seeded from global), accessRequest marker, guard(mode), allow/deny
 scripts/
   install.mjs         # installer: build + npm link + global settings (~/.config/tokoder)
   tocoder.ps1 / .sh / .bat (and tokoder aliases)

@@ -14,6 +14,7 @@ import { logEntry } from "../utils/logger.js";
 import { listOllamaModels, ollamaIdSuggestion } from "../utils/ollama.js";
 import { loadSession, saveSession, clearSession } from "../core/session.js";
 import { loadQuick, saveQuick, setQuickSlot, formatQuick, type QuickMap } from "../core/quick.js";
+import { renderMarkdown, stripAnsi } from "../utils/markdown.js";
 
 export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: string; initialModel?: string; resumed?: boolean }) {
   const { exit } = useApp();
@@ -130,8 +131,9 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
         try {
           let out = "\n— tocoder transcript —\n";
           for (const m of msgs) {
-            const tag = m.role === "user" ? "› YOU:" : m.role === "error" ? "✗ ERR:" : m.role === "system" ? "◆ SYS:" : "● AI:";
-            out += `${tag} ${m.text}\n`;
+            const tag = m.role === "user" ? "\x1b[34m› YOU:\x1b[0m" : m.role === "error" ? "\x1b[31m✗ ERR:\x1b[0m" : m.role === "system" ? "\x1b[33m◆ SYS:\x1b[0m" : "\x1b[36m● AI:\x1b[0m";
+            const body = m.role === "assistant" ? renderMarkdown(m.text).join("\n") : m.text;
+            out += `${tag} ${body}\n`;
           }
           out += "\n";
           writeSync(1, out);
@@ -139,7 +141,8 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
           stdout.write("\n— tocoder transcript —\n");
           for (const m of msgs) {
             const tag = m.role === "user" ? "› YOU:" : m.role === "error" ? "✗ ERR:" : m.role === "system" ? "◆ SYS:" : "● AI:";
-            stdout.write(`${tag} ${m.text}\n`);
+            const body = m.role === "assistant" && !m.text.includes("\u0000") ? renderMarkdown(m.text).map(stripAnsi).join("\n") : m.text;
+            stdout.write(`${tag} ${body}\n`);
           }
         }
       }
@@ -161,6 +164,7 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
   const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "◆ SYS:" : r === "error" ? "✗ ERR:" : "● AI:");
 
   // flat line model: label line + wrapped text lines per message
+  // assistant messages render as colored markdown; other roles plain
   const flatLines = useMemo(() => {
     const arr: { role: "user" | "assistant" | "system" | "error"; text: string; isLabel: boolean }[] = [];
     messages.forEach((m, i) => {
@@ -168,13 +172,58 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
       arr.push({ role: m.role, text: roleLabel(m.role), isLabel: true });
       const src = m.text || (busy && i === messages.length - 1 ? "…" : "");
       if (!src) { arr.push({ role: m.role, text: "", isLabel: false }); return; }
-      for (const ln of src.split("\n")) {
+      // markdown → colored display lines (ANSI inside); wrap them visually (ANSI-safe)
+      const srcLines = m.role === "assistant" && !m.text.includes("\u0000") ? renderMarkdown(src) : src.split("\n");
+      for (const ln of srcLines) {
         if (!ln) { arr.push({ role: m.role, text: "", isLabel: false }); continue; }
-        for (let j = 0; j < ln.length; j += innerW) arr.push({ role: m.role, text: ln.slice(j, j + innerW), isLabel: false });
+        pushWrapped(arr, m.role, ln, innerW);
       }
     });
     return arr;
   }, [messages, innerW, busy]);
+
+  /** wrap one display line to innerW without breaking ANSI escape sequences */
+  function pushWrapped(arr: { role: any; text: string; isLabel: boolean }[], role: any, line: string, w: number) {
+    if (!/\x1b\[/.test(line) || visibleLen(line) <= w) {
+      // fast path: split raw (ANSI-safe when no codes or fits)
+      if (!/\x1b\[/.test(line)) {
+        for (let j = 0; j < line.length; j += w) arr.push({ role, text: line.slice(j, j + w), isLabel: false });
+        return;
+      }
+      arr.push({ role, text: line, isLabel: false });
+      return;
+    }
+    // ANSI-aware chunking: emit chunks each prefixed with carried-over SGR state
+    let col = 0, chunk = "", carried = "";
+    let i = 0;
+    const codes: string[] = [];
+    while (i < line.length) {
+      const m = /^\x1b\[[0-9;]*m/.exec(line.slice(i));
+      if (m) {
+        chunk += m[0];
+        const n = (m[0].match(/\d+/g) ?? []) as string[];
+        if (n.includes("0")) codes.length = 0;
+        else codes.push(...n);
+        carried = codes.length ? `\x1b[${codes.join(";")}m` : "";
+        i += m[0].length;
+        continue;
+      }
+      if (col === w) {
+        arr.push({ role, text: chunk + "\x1b[0m", isLabel: false });
+        chunk = carried;
+        col = 0;
+      }
+      chunk += line[i];
+      col++;
+      i++;
+    }
+    if (chunk) arr.push({ role, text: chunk + "\x1b[0m", isLabel: false });
+  }
+
+  /** visible char length (ANSI excluded) */
+  function visibleLen(s: string): number {
+    return s.replace(/\x1b\[[0-9;]*m/g, "").length;
+  }
 
   const maxScroll = Math.max(0, flatLines.length - viewportH);
   const startIdx = Math.max(0, flatLines.length - viewportH - Math.min(scroll, maxScroll));
