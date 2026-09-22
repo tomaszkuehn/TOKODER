@@ -24,7 +24,7 @@ export type AgentOpts = {
   cwd?: string;
   timeoutMs?: number;
   maxSteps?: number;
-  /** read-only plan mode: no write/edit tools, no mutating bash, plan-only system prompt */
+  
   planMode?: boolean;
   onToolApproval?: (name: string, args: any) => Promise<ToolDecision>;
   onAccessRequest?: (tool: string, args: any, mode: "read" | "write" | "execute", target: string) => Promise<AccessDecision>;
@@ -32,19 +32,19 @@ export type AgentOpts = {
   onToolCall?: (name: string, args: any) => void;
   onToolResult?: (name: string, result: string) => void;
   onContext?: (usedTokens: number) => void;
-  /** live queue: user supplements typed while the run is in progress; drained at step boundaries (mutate in place) */
+  
   supplementQueue?: string[];
-  /** called with the formatted user message each time supplements are injected into the conversation */
+  
   onSupplement?: (content: string) => void;
-  /** steps already consumed in this folder's budget (persisted per-project); runs start from here */
+  
   stepsUsed?: number;
-  /** called after every step with (stepsUsed, maxSteps) so the caller can persist the budget */
+  
   onSteps?: (stepsUsed: number, maxSteps: number) => void;
 };
 
 export type Usage = { inputTokens: number; outputTokens: number; totalTokens: number };
 
-/** rough context estimate actually sent to the model (chars/4 + overhead per message + per tool result) */
+
 function estimateMsgsTokens(msgs: any[]): number {
   let chars = 0;
   let count = 0;
@@ -72,13 +72,13 @@ export class AgentError extends Error {
   }
 }
 
-/** PLAN MODE note appended to the system prompt when opts.planMode */
+
 const PLAN_NOTE = `\n\n# PLAN MODE (read-only)\nYou are in PLAN MODE. You MUST NOT modify anything:
 - write/edit tools are unavailable; bash may NOT create/modify/delete files, install, git-commit, or redirect output (>) into files.
 - Only read/glob/grep/inspect bash (e.g. type, git log, git diff, npm test without fixes) is allowed.
 - End your turn with a concrete PLAN: numbered steps, files to touch, and how to verify. The user will approve it before any change is made.`;
 
-/** bash subcommands that mutate things - denied in plan mode */
+
 const PLAN_BASH_DENY: RegExp[] = [
   /(^|[\s"'`(=;&|])(npm|pnpm|yarn|pip|cargo|dotnet|apt|choco|winget|scoop)\s+(install|add|remove|uninstall|update|upgrade|publish)\b/i,
   /(^|[\s"'`(=;&|])(rm|del|rmdir|Remove-Item|rmdir|mv|Move-Item|git\s+(add|commit|push|reset|checkout|restore|clean|merge|rebase)|touch|New-Item|Set-Content|Out-File|Copy-Item)\b/i,
@@ -91,9 +91,9 @@ function screenPlanBash(command: string): string | null {
   return null;
 }
 
-/** tool names visible to the model in plan mode (read-only) */
+
 const planToolNames = agentToolNames.filter((n) => n !== "write" && n !== "edit");
-/** tools object actually passed to streamText per mode */
+
 const planTools = Object.fromEntries(Object.entries(agentTools).filter(([n]) => planToolNames.includes(n)));
 
 export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { role: "user" | "assistant"; content: string }[] } = {}, onUsage?: (u: Usage) => void) {
@@ -120,10 +120,10 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
   const stepText: string[] = [];
   let lastHadTools = false;
   let nudged = false;
-  /** callback reporting how many steps were consumed by this run (persisted per-folder by the TUI) */
+  
   opts.onSteps?.(0, maxSteps);
   let stepsUsed = opts.stepsUsed ?? 0;
-  /** drain supplements at step boundaries: format as "[user supplement while working] ..." user messages */
+  
   const drainQueue = () => {
     if (!opts.supplementQueue?.length) return;
     const items = opts.supplementQueue.splice(0);
@@ -157,6 +157,7 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
       const pendingCalls: { toolCallId: string; toolName: string; input: any }[] = [];
       stepText.length = 0;
       lastHadTools = false;
+      restartTimer(); 
       try {
         for await (const part of result.fullStream as AsyncIterable<any>) {
           if (part.type === "text-delta") {
@@ -170,7 +171,7 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
           }
         }
       } catch (e: any) {
-        if (e.name === "AbortError") throw new AgentError(`[${cfg.id}] timeout after ${(opts.timeoutMs ?? 300000) / 1000}s - model was still working (tools). Retry with higher --timeout`, "TIMEOUT");
+        if (e.name === "AbortError") throw new AgentError(`[${cfg.id}] timeout after ${(opts.timeoutMs ?? 300000) / 1000}s - model stream stalled (no data). Retry with higher --timeout`, "TIMEOUT");
         const msg = e.message ?? String(e);
         if (msg.includes("Missing Authentication") || msg.includes("No auth") || msg.includes("API key"))
           throw new AgentError(`[${cfg.id}] Missing Authentication - no key for ${cfg.apiKeyEnv ?? "OPENROUTER_API_KEY"}. Fix: :models key ${cfg.id} sk-or-...  then :models test ${cfg.id}`, "401");
@@ -180,7 +181,7 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
         if (msg.includes("404")) throw new AgentError(`[${cfg.id}] 404 model "${cfg.model}" not found on ${cfg.baseURL ?? cfg.provider}`, "404");
         throw new AgentError(`[${cfg.id}] ${msg}`, e.code);
       }
-      if (timeoutFired) throw new AgentError(`[${cfg.id}] timeout after ${(opts.timeoutMs ?? 300000) / 1000}s - model was still working (tools). Retry with higher --timeout`, "TIMEOUT");
+      if (timeoutFired) throw new AgentError(`[${cfg.id}] timeout after ${(opts.timeoutMs ?? 300000) / 1000}s - model stream stalled (no data). Retry with higher --timeout`, "TIMEOUT");
       {
         const parts: any[] = [];
         if (stepText.length) parts.push({ text: stepText.join("") });
@@ -203,7 +204,7 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
           const input = usage.inputTokens ?? 0;
           let output = usage.outputTokens ?? 0;
           const total = usage.totalTokens ?? 0;
-          /** some OpenAI-compatible proxies report total but 0 output - derive it */
+          
           if (!output && total > input) output = total - input;
           onUsage({ inputTokens: input, outputTokens: output, totalTokens: total });
         }
@@ -243,6 +244,7 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
           output = `DENIED by user: "${c.toolName}" was not executed. Ask the user how to proceed.`;
         } else {
           opts.onToolCall?.(c.toolName, c.input);
+          restartTimer();
           try {
             const ex = executors[c.toolName];
             output = ex ? String(await ex(c.input, { signal: controller.signal })) : `Error: unknown tool "${c.toolName}"`;
@@ -255,6 +257,7 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
               } else {
                 const { applyAskDecision } = await import("../utils/permissions.js");
                 applyAskDecision(target, mode as any, decision);
+                restartTimer();
                 output = ex ? String(await ex(c.input, { signal: controller.signal })) : output;
               }
             }
@@ -263,6 +266,7 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
             output = `Error: ${e.message ?? String(e)}`;
           }
           opts.onToolResult?.(c.toolName, output.slice(0, 500));
+          restartTimer();
         }
         results.push({ type: "tool-result", toolCallId: c.toolCallId, toolName: c.toolName, output: { type: "text", value: output } });
       }
