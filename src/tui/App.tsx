@@ -14,7 +14,7 @@ import { countLOC, detectEnvs, formatDuration, estimateTokens, spinnerFrames } f
 import { setEnvKey, maskKey } from "../utils/env.js";
 import { setLogging, loggingEnabled, logEntry, logPath } from "../utils/logger.js";
 import { listOllamaModels, ollamaIdSuggestion } from "../utils/ollama.js";
-import { loadSession, saveSession, clearSession } from "../core/session.js";
+import { loadSession, saveSession, saveSessionThrottled, clearSession } from "../core/session.js";
 import { loadQuick, saveQuick, setQuickSlot, formatQuick, type QuickMap } from "../core/quick.js";
 import { renderMarkdown, stripAnsi, sanitizeCp437 } from "../utils/markdown.js";
 
@@ -113,9 +113,11 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
   const startedAtRef = useRef(restored?.startedAt ?? new Date().toISOString());
   const sessionModelRef = useRef(modelId);
   useEffect(() => { sessionModelRef.current = modelId; }, [modelId]);
-  const persistSession = () => {
+  const persistSession = (throttled = false) => {
+    const state = { modelId: sessionModelRef.current, startedAt: startedAtRef.current, history: historyRef.current, stepsUsed: restoredRef.current.stepsUsed, tokenStats: tokenStatsRef.current, cmdHistory };
     try {
-      saveSession({ modelId: sessionModelRef.current, startedAt: startedAtRef.current, history: historyRef.current, stepsUsed: restoredRef.current.stepsUsed, tokenStats: tokenStatsRef.current, cmdHistory }, process.cwd());
+      if (throttled) saveSessionThrottled(state, process.cwd());
+      else saveSession(state, process.cwd());
     } catch {}
   };
 
@@ -123,7 +125,7 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
     const cur = tokenStatsRef.current[id] ?? { sent: 0, recv: 0 };
     tokenStatsRef.current = { ...tokenStatsRef.current, [id]: { sent: cur.sent + s, recv: cur.recv + r } };
     setTokenStats(tokenStatsRef.current);
-    persistSession();
+    persistSession(true);
   };
   const active = cfg.models.find((m) => m.id === modelId)!;
   const compactCfg = normalizeCompact(cfg.compact);
@@ -895,7 +897,7 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
       const budgetMax = useContinue ? 0 : normalizeMaxSteps(cfgRef.current.maxSteps);
       const startSteps = useContinue ? 0 : restoredRef.current.stepsUsed;
       if (useContinue) restoredRef.current.stepsUsed = 0;
-      const persistSteps = (used: number) => { restoredRef.current.stepsUsed = used; persistSession(); };
+      const persistSteps = (used: number) => { restoredRef.current.stepsUsed = used; persistSession(true); };
       let usageSent = false, usageRecv = false;
       let acc = ""; setMessages((m) => [...m, { role: "assistant", text: "" }]);
       const toolLog: string[] = [];
@@ -921,6 +923,14 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
           } catch {}
           return false;
         };
+        // throttled stream->UI: batch text-deltas, flush at most every ~120ms (single setMessages per flush instead of per token)
+        let flushTimer: ReturnType<typeof setTimeout> | null = null;
+        const flushNow = () => {
+          if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+          setMessages((m) => {
+            const copy = [...m]; copy[copy.length - 1] = { role: "assistant", text: acc || (toolLog.length ? `[working... ${toolLog[toolLog.length - 1]}]` : "...") }; return copy;
+          });
+        };
         for await (const chunk of runAgent(effectivePrompt, { modelId, timeoutMs: 300000, history, abortSignal: ac.signal,
           planMode: !!cfgRef.current.planMode,
           maxSteps: budgetMax,
@@ -936,6 +946,27 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
           },
           onToolCall: (n, a) => { const line = `-> ${n} ${JSON.stringify(a).slice(0, 120)}`; toolLog.push(line); pushSystem(line); }, onToolResult: (n, r) => { pushSystem(`<- ${n}: ${r.slice(0, 120)}`); },
           onContext: (tok) => { setCtxUsed(tok); },
+          contextLimitTokens: (() => { const cc = normalizeCompact(cfgRef.current.compact); if (!cc.autoTrigger) return 0; const ctx = active.contextWindow ?? DEFAULT_CONTEXT_WINDOW; return compactLimit(cc, ctx).limit; })(),
+          onContextOverflow: async (usedTok) => {
+            const cc = normalizeCompact(cfgRef.current.compact);
+            const ctx = active.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+            const { limit, reason } = compactLimit(cc, ctx);
+            const why = reason === "tokens" ? `max ${cc.maxTokens.toLocaleString("en-US")} tok` : `${cc.thresholdPercent}% of ${ctx} = ${Math.round((ctx * cc.thresholdPercent) / 100)} tok`;
+            pushSystem(`* Auto-compact (mid-run): ${usedTok} tok > ${limit} tok (${why}) - compacting agent context`);
+            try {
+              const res = await compactHistory({ history: historyRef.current, mode: cc.mode, modelConfig: active, onUsage: (u) => bumpTokens(modelId, u.inputTokens, u.outputTokens) });
+              historyRef.current = [
+                { role: "user" as const, content: `[CONTEXT SUMMARY after compact - ${res.removed} older messages removed. Honor this summary when continuing.]\n${res.summary}` },
+                { role: "assistant" as const, content: "Understood. Continuing with the summarized context." },
+                ...res.kept,
+              ];
+              persistSession();
+              return [...historyRef.current];
+            } catch (e: any) {
+              pushError(`Mid-run compact failed: ${e.message ?? String(e)} - continuing with full context`);
+              return null;
+            }
+          },
           supplementQueue: supplementsRef.current,
           onSupplement: (content) => { pushSystem(`^ Supplement delivered: "${content.replace("[user supplement while working] ", "").slice(0, 80)}${content.length > 88 ? "..." : ""}"`); },
         }, (u) => {
@@ -943,10 +974,10 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
           if (u.outputTokens > 0) { usageRecv = true; bumpTokens(modelId, 0, u.outputTokens); }
         })) {
           acc += sanitizeCp437(chunk);
-          setMessages((m) => {
-            const copy = [...m]; copy[copy.length - 1] = { role: "assistant", text: acc || (toolLog.length ? `[working... ${toolLog[toolLog.length - 1]}]` : "...") }; return copy;
-          });
+          if (!flushTimer) flushTimer = setTimeout(flushNow, 120);
         }
+        if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+        flushNow();
         if (!acc.trim()) {
           if (toolLog.length) { acc = `[done - tools: ${toolLog.join(", ")}]`; setMessages((m) => { const c=[...m]; c[c.length-1]={role:"assistant", text:acc}; return c; }); }
           else pushError(`[${modelId}] empty - :models test ${modelId}`);
@@ -957,6 +988,8 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
         setCtxUsed(Math.max(ctxUsed, estimateHistoryTokens(historyRef.current)));
         persistSession();
         if (/step limit \(\d+\) reached/.test(acc) && !useContinue) continueRef.current = true;
+        // auto-compact mid-run handled via onContextOverflow (real agent context, not just TUI history);
+        // post-run check still useful for sessions that grew via short runs without tools
         const cc = normalizeCompact(cfgRef.current.compact);
         if (cc.autoTrigger) {
           const ctx = active.contextWindow ?? DEFAULT_CONTEXT_WINDOW;

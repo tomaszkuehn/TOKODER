@@ -109,16 +109,16 @@ export async function bashTool({ command, workdir, timeout }: z.infer<typeof bas
       shell: onWin && !linuxish ? "powershell.exe" : undefined,
       ...(ctx?.signal ? { signal: ctx.signal } : {}),
     });
-    const out = [stdout, stderr].filter(Boolean).join("\n").slice(0, 30000);
+    const out = [stdout, stderr].filter(Boolean).join("\n").slice(0, 6000);
     return out || "(no output)";
   } catch (e: any) {
     if (e.killed && (e.signal ?? "").startsWith("SIG")) return `Error: command killed after ${eff / 1000}s timeout. If you passed timeout in ms by mistake, note the bash tool timeout is in SECONDS (default 30s). Retry with timeout: ${Math.min(Math.ceil((e.message.match(/(\d+)\s*ms/)?.[1] ? eff / 1000 : 60)), 600)}+ or omit it.`;
-    const base = `Error (exit ${e.code ?? "?"}): ${(e.stdout ?? "") + (e.stderr ?? e.message)}`.slice(0, 28000);
+    const base = `Error (exit ${e.code ?? "?"}): ${(e.stdout ?? "") + (e.stderr ?? e.message)}`.slice(0, 5600);
     const hint = onWin && linuxish
       ? `\nHint: You are on Windows (${process.platform}) but sent Linux command. WSL ${await hasWsl() ? "is available — rerun via wsl bash" : "not found — use Windows paths or install WSL"}.`
       : onWin
       ? `\nHint: You are on Windows. Use PowerShell syntax or WSL bash.`
       : "";
-    return (base + hint).slice(0, 30000);
+    return (base + hint).slice(0, 6000);
   }
 }

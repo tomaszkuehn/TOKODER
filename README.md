@@ -13,12 +13,14 @@ AI coding agent for the terminal — clone of [opencode](https://github.com/anom
 - **ACL sandbox** — full access inside `cwd`; outside: Windows system folders always denied, per-mode rules (read/write/execute) persisted per project in `.tokoder/access-rules.json` (first run seeds from global `~/.config/tokoder/access-rules.json`); on first access outside rules the app asks `[P]File / [F]Parent folder / [N]o / [A]bort` and auto-retries the tool. Manage with `:acl`, `:acl set <mode> <yes|no>`, `:allow <path> [read|write|execute]`, `:deny <path>`
 - **Multi-model** — models via `tokoder.config.json` (Anthropic / OpenAI / OpenRouter / Ollama local + Ollama Cloud / any OpenAI-compatible provider e.g. cheaperinference.com)
 - **Anti-flicker spinner** — spinner is an isolated component with its own 80ms timer; only it rerenders during work, the rest of the UI stays static (no full-frame flicker)
+- **Throttled streaming + persistence** — model text flushes to the screen at most every 120ms (one render per flush instead of per token); session file writes are throttled (max 1 write/2s during a run, per-step counters coalesce)
 - **Interactive `:models add` wizard** — local/cloud Ollama with live model listing (`/api/tags`), auto-suggested free id (overridable); cloud requires key set first via `:key`
 - **Per-model token counters** — `id (1.1k↑/3.4k↓)` next to every model in header (0↑/0↓ when unused); STATUS shows **total sent/recv across all models**; counters persist in the session file (`.tokoder/sessions/`) and survive resume (`-c`) and mid-run aborts; real `usage` from provider per agent step (proxies reporting `totalTokens` with 0 `outputTokens` are derived as `total - input`), `len/4` estimate fallback on abort
 - **3-panel TUI** — fixed header/status/input (`flexShrink:0`), auto-scrolling output with scrollbar (`PgUp`/`PgDn` pauses, PgDn returns to bottom), editable `↑`/`↓` command history (incl. commands), wrap-aware flex status panel (responsive on narrow terminals), alt buffer with sync transcript dump (`TOCODER_ALT_SCREEN=0` disables), cwd shown in header, Esc cancels (exit only via `:exit`)
 - **Vim-style commands** — `:exit` `:compact` `:key` `:models` `:acl` `:allow`/`:deny` with ghost autocomplete (`Tab`/`Enter` completes)
 - **Project instructions (`AGENTS.md`)** — file appended to the system prompt on every call: output-discipline rules (token savings) + tool cheat-sheet. `:agents init` creates it with defaults, `:agents edit` opens `$EDITOR` (default notepad), `:agents add <text>` appends, `:agents rm <n>` deletes a numbered line; changes apply from the next prompt
-- **Compact** — 3 strategies (`reduce`/`balance`/`value`), optional steering instruction, auto-trigger at % of context window or absolute token limit (see below)
+- **Compact** — 3 strategies (`reduce`/`balance`/`value`), optional steering instruction, auto-trigger at % of context window or absolute token limit; **fires mid-run on the real agent context** (tool results included), not just the chat transcript (see below)
+- **Token/context efficiency** — old tool results (>10 steps back, >200 chars) are replaced with short placeholders each step, so a 50-tool run no longer re-sends megabytes of tool output; `read` returns max 8k chars, `bash` max 6k (re-run/offset for more)
 - **Step budget** — 500 steps per run by default (0 = unlimited); persists per folder; "continue" after a limit stop resets it; `:steps <n>` to change
 - **Logging opt-in** — `.tokoder/tocoder.log` is **OFF by default**; enable via `"logging": true` in config, `TOCODER_LOGGING=1`, or `:log on` in TUI (`:log` toggles)
 - **Chat history** — keeps 20 turns, `1`-`9` auto-expands quoting the actual option text from the model's list
@@ -232,6 +234,7 @@ History compaction replaces old turns with a model-generated summary + keeps rec
 
 - `:compact <instruction>` — steer the summary, e.g. `:compact keep the implementation plan`, `:compact focus on decisions and file paths`, `:compact keep open threads and next steps`.
 - **Auto-compact**: fires when estimated history tokens exceed **whichever limit comes first** — `thresholdPercent` of the model context window **or** the absolute `maxTokens` limit. Set a model's window with `:models set <id> contextWindow <tokens>` (default 128000). Config: `"compact": { "autoTrigger": true, "thresholdPercent": 70, "maxTokens": 40000 }` (`maxTokens: 0` = percent only).
+- **Mid-run auto-compact**: the limit is checked against the **real agent context** (system prompt + chat + tool calls + tool results) at every step — when exceeded, the conversation is compacted and swapped in-place, then the run continues on the summarized context (`* Auto-compact (mid-run): … tok > … tok`); once per run.
 - Config: `"compact": { "mode": "balance", "autoTrigger": true, "thresholdPercent": 70 }` in `tokoder.config.json`.
 
 ## Access Control (ACL)
@@ -315,16 +318,16 @@ Common: `404` → wrong `model`; `ECONNREFUSED` → not running; `401` → wrong
 src/
   cli.ts              # commander CLI (tocoder), dotenv (project+global), bootstrap, -c/--continue, --timeout
   core/
-    agent.ts          # manual step loop (stepCountIs 1 + msgs re-feed), tool approval + abort, ACL marker protocol, timeout per step, testConnection
+    agent.ts          # manual step loop (stepCountIs 1 + msgs re-feed), tool approval + abort, ACL marker protocol, timeout per step (restarted per tool exec), old tool-result trimming (10 recent kept, older -> placeholder), mid-run context-overflow history swap, system prompt cached per run, testConnection
     bootstrap.ts      # idempotent .tokoder/ creation with default settings at CLI startup
     config.ts         # load/save tokoder.config.json (global+local merge), compact config + limits
     compact.ts        # compactHistory (reduce/balance/value), estimateHistoryTokens
     instructions.ts   # AGENTS.md — read/init/append/remove + system-prompt injection
     providers.ts      # getModelFromConfig
-    session.ts        # per-project session persistence (.tokoder/sessions/)
+    session.ts        # per-project session persistence (.tokoder/sessions/); saveSessionThrottled (max 1 write/2s, trailing flush)
     quick.ts          # quick commands slots 1-5 (.tokoder/quick.json)
-  tools/              # read / write / edit / bash / glob / grep (ACL-guarded); agentTools (schemas) + executors; bash screenCommand mode-classifies commands (read vs write rules); image-size.ts sniffs PNG/JPEG/GIF/WEBP/BMP dimensions; read returns image metadata instead of binary garbage
-  tui/App.tsx         # Ink 3-panel, vim, autocomplete, editable history, auto-scroll + scrollbar, tool approval + ACL prompt (abort), per-model token stats (persisted, summed in STATUS), :models add/rm wizards, auto-compact, markdown output, live supplements, isolated anti-flicker spinner
+  tools/              # read / write / edit / bash / glob / grep (ACL-guarded); agentTools (schemas) + executors; bash screenCommand mode-classifies commands (read vs write rules); image-size.ts sniffs PNG/JPEG/GIF/WEBP/BMP dimensions; read returns image metadata instead of binary garbage; output caps: read 8k chars, bash 6k
+  tui/App.tsx         # Ink 3-panel, vim, autocomplete, editable history, auto-scroll + scrollbar, tool approval + ACL prompt (abort), per-model token stats (persisted, summed in STATUS), :models add/rm wizards, auto-compact (mid-run on real agent context), markdown output, live supplements, isolated anti-flicker spinner, throttled stream flush (120ms)
   utils/
     paths.ts          # appDir/appFile (.tokoder/) + globalAppDir (~/.config/tokoder)
     stats.ts          # LOC + env + duration + spinner styles (TOCODER_SPINNER) (ignores .tokoder)

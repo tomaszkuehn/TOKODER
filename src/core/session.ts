@@ -59,6 +59,26 @@ export function saveSession(s: Omit<SessionState, "version" | "cwd" | "updatedAt
   return p;
 }
 
+/** throttled save for high-frequency callers (per-step persistence): writes at most once per minIntervalMs, always flushes the last call via trailing timer */
+const pendingSaves = new Map<string, { s: any; timer: NodeJS.Timeout | null }>();
+
+export function saveSessionThrottled(s: Omit<SessionState, "version" | "cwd" | "updatedAt">, cwd = process.cwd(), minIntervalMs = 2000): void {
+  const key = resolve(cwd).toLowerCase();
+  const cur = pendingSaves.get(key);
+  if (cur?.timer) {
+    cur.s = s; // coalesce: keep freshest state, single trailing write
+    return;
+  }
+  try { saveSession(s, cwd); } catch {}
+  const timer = setTimeout(() => {
+    const next = pendingSaves.get(key);
+    pendingSaves.delete(key);
+    if (next?.s) { try { saveSession(next.s, cwd); } catch {} }
+  }, minIntervalMs);
+  timer.unref?.();
+  pendingSaves.set(key, { s: null, timer });
+}
+
 export function clearSession(cwd = process.cwd()): boolean {
   try {
     unlinkSync(sessionPath(cwd));

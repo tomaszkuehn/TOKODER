@@ -32,7 +32,7 @@ export async function readTool({ path, offset, limit }: z.infer<typeof readSchem
     const start = offset ? offset - 1 : 0;
     const end = limit ? start + limit : undefined;
     const sliced = lines.slice(start, end);
-    return sliced.map((l, i) => `${start + i + 1}: ${l}`).join("\n").slice(0, 40000);
+    return sliced.map((l, i) => `${start + i + 1}: ${l}`).join("\n").slice(0, 8000);
   } catch (e: any) {
     return `Error: ${e.message}`;
   }

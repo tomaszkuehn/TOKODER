@@ -26,12 +26,16 @@ export type AgentOpts = {
   maxSteps?: number;
   
   planMode?: boolean;
+  /** auto-compact threshold in tokens (0 = off). When estimated msg tokens exceed it, onContext fires with the estimate and the loop can be paused by the caller via returning a new compacted history. */
+  contextLimitTokens?: number;
   onToolApproval?: (name: string, args: any) => Promise<ToolDecision>;
   onAccessRequest?: (tool: string, args: any, mode: "read" | "write" | "execute", target: string) => Promise<AccessDecision>;
   abortSignal?: AbortSignal;
   onToolCall?: (name: string, args: any) => void;
   onToolResult?: (name: string, result: string) => void;
   onContext?: (usedTokens: number) => void;
+  /** fires when contextLimitTokens exceeded; caller returns compacted history to swap in (or null to keep going) */
+  onContextOverflow?: (usedTokens: number) => Promise<{ role: "user" | "assistant"; content: string }[] | null>;
   
   supplementQueue?: string[];
   
@@ -43,6 +47,28 @@ export type AgentOpts = {
 };
 
 export type Usage = { inputTokens: number; outputTokens: number; totalTokens: number };
+
+/** keep only the N most recent tool RESULT payloads; older ones become a short placeholder (saves re-sending huge tool output every step) */
+const KEEP_RECENT_TOOL_RESULTS = 10;
+
+/** trim old tool-result payloads in msgs to a placeholder; keeps the last KEEP_RECENT_TOOL_RESULTS intact */
+function trimOldToolResults(msgs: any[]): void {
+  // collect indices of assistant messages that contain tool-calls, newest first, to know which tool results are "recent"
+  const toolMsgIdx: number[] = [];
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i]?.role === "tool") toolMsgIdx.push(i);
+  }
+  for (let k = KEEP_RECENT_TOOL_RESULTS; k < toolMsgIdx.length; k++) {
+    const mi = toolMsgIdx[k];
+    const results: any[] = Array.isArray(msgs[mi]?.content) ? msgs[mi].content : [];
+    for (const r of results) {
+      const v = r?.output?.value;
+      if (typeof v === "string" && v.length > 200 && !v.startsWith("[older tool result omitted")) {
+        r.output.value = `[older tool result omitted to save context - ${v.length} chars. Re-run the tool if you need it again]`;
+      }
+    }
+  }
+}
 
 
 function estimateMsgsTokens(msgs: any[]): number {
@@ -123,7 +149,10 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
   
   opts.onSteps?.(0, maxSteps);
   let stepsUsed = opts.stepsUsed ?? 0;
-  
+  // system prompt depends on AGENTS.md which does not change mid-run - build once
+  const systemPrompt = buildSystemPrompt(SYSTEM + (opts.planMode ? PLAN_NOTE : ""), opts.cwd ?? process.cwd());
+  let overflowChecked = false;
+
   const drainQueue = () => {
     if (!opts.supplementQueue?.length) return;
     const items = opts.supplementQueue.splice(0);
@@ -132,6 +161,7 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
     opts.onSupplement?.(content);
     logEntry("SUPPLEMENT", cfg.id, content);
   };
+
   try {
     let limitHit = false;
     for (let step = 0; ; step++) {
@@ -139,13 +169,25 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
       stepsUsed++;
       opts.onSteps?.(stepsUsed, maxSteps);
       drainQueue();
+      trimOldToolResults(msgs);
+      // context management: estimate, report, allow caller to swap in compacted history
+      const ctxTok = estimateMsgsTokens(msgs);
+      opts.onContext?.(ctxTok);
+      if (!overflowChecked && opts.contextLimitTokens && opts.onContextOverflow && ctxTok > opts.contextLimitTokens) {
+        overflowChecked = true; // only once per run; caller compacts and we continue on the swapped history
+        const swapped = await opts.onContextOverflow(ctxTok);
+        if (swapped) {
+          msgs.length = 0;
+          msgs.push(...swapped, { role: "user", content: prompt });
+          logEntry("CONTEXT-SWAP", cfg.id, `swapped history after overflow at ${ctxTok} tok`);
+        }
+      }
       logEntry("TO-MODEL", cfg.id, JSON.stringify({ step, messages: msgs }, null, 2));
-      opts.onContext?.(estimateMsgsTokens(msgs));
       let result: any;
       try {
         result = streamText({
           model: mdl,
-          system: buildSystemPrompt(SYSTEM + (opts.planMode ? PLAN_NOTE : ""), opts.cwd ?? process.cwd()),
+          system: systemPrompt,
           messages: msgs,
           tools: planTools,
           stopWhen: stepCountIs(1),
