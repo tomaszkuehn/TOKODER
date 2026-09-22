@@ -12,7 +12,7 @@ import { loadConfig, saveConfig, normalizeCompact, compactLimit, normalizeMaxSte
 import { compactHistory, estimateHistoryTokens, COMPACT_MODES, type CompactMode } from "../core/compact.js";
 import { countLOC, detectEnvs, formatDuration, estimateTokens, spinnerFrames } from "../utils/stats.js";
 import { setEnvKey, maskKey } from "../utils/env.js";
-import { logEntry } from "../utils/logger.js";
+import { setLogging, loggingEnabled, logEntry, logPath } from "../utils/logger.js";
 import { listOllamaModels, ollamaIdSuggestion } from "../utils/ollama.js";
 import { loadSession, saveSession, clearSession } from "../core/session.js";
 import { loadQuick, saveQuick, setQuickSlot, formatQuick, type QuickMap } from "../core/quick.js";
@@ -21,7 +21,11 @@ import { renderMarkdown, stripAnsi, sanitizeCp437 } from "../utils/markdown.js";
 export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: string; initialModel?: string; resumed?: boolean }) {
   const { exit } = useApp();
   const { stdout } = useStdout();
-  const [cfg, setCfg] = useState(() => loadConfig());
+  const [cfg, setCfg] = useState(() => {
+    const c = loadConfig();
+    setLogging(!!c.logging);
+    return c;
+  });
   const restored = useMemo(() => (initialModel ? null : loadSession()), []);
   const restoredRef = useRef(restored ?? { version: 1 as const, cwd: process.cwd(), modelId: "", startedAt: new Date().toISOString(), updatedAt: "", stepsUsed: 0, tokenStats: {}, history: [] });
   const [modelId, setModelId] = useState(initialModel ?? restored?.modelId ?? cfg.defaultModel);
@@ -307,7 +311,7 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
     setModelId(next.id);
   };
 
-  const COMMANDS = ["exit", "quit", "q", "compact", "compact-mode", "compact-auto", "steps", "plan", "quick", "agents", "init", "clear", "models", "key", "help", "allow", "deny", "session"] as const;
+  const COMMANDS = ["exit", "quit", "q", "compact", "compact-mode", "compact-auto", "steps", "plan", "quick", "agents", "init", "clear", "models", "key", "help", "allow", "deny", "session", "log"] as const;
   const MODEL_SUBS = ["add", "rm", "default", "key", "test", "set"] as const;
 
   const getSuggestion = (raw: string): string | null => {
@@ -538,6 +542,12 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
       pushSystem(`Session: ${sessionExists() ? "saved for this folder" : "none"}\nResume: tocoder -c (in this folder)\nReset: :session reset`);
       return true;
     }
+    if (c === "log") {
+      const on = args[0] ? ["on", "1", "true", "yes"].includes(args[0].toLowerCase()) : !loggingEnabled();
+      setLogging(on);
+      pushSystem(`${on ? "+" : "-"} Logging ${on ? "ON" : "OFF"} - ${on ? logPath() : "(no file written)"}\nPersist: "logging": true in tokoder.config.json (global or project-local) | env TOCODER_LOGGING=1`);
+      return true;
+    }
     if (["models", "model", "providers"].includes(c)) {
       const sub = args[0]?.toLowerCase();
       const cur = reloadCfg();
@@ -678,7 +688,7 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
     }
     if (["help", "h", "?"].includes(c)) { pushSystem(`Commands:\n:exit / :q - exit\n:compact [instruction] - compact history (mode: :compact-mode)\n  examples: :compact keep the implementation plan\n             :compact focus on decisions and file paths\n             :compact keep open threads and next steps\n:compact-mode <reduce|balance|value> - compact strategy\n:compact-auto <on|off|percent|tokens <n>> - auto-trigger: % of context window OR absolute token limit, whichever comes first\n:steps <n> - agent step budget per run (0 = unlimited); "continue" after limit resets the budget
 :plan [on|off] - read-only plan mode: no file modifications, model proposes a plan instead
-:quick - quick commands (slots 1-5, per project): Ctrl+Q → digit overwrites input (editable); Ctrl+S (input non-empty) → digit saves it\n:agents - project instructions file (AGENTS.md), sent with every prompt\n  :agents init | edit | add <text> | rm <line>\n:init - create AGENTS.md with defaults\n:key - set Ollama Cloud API key\n:models - list | :models add/rm - wizards | :models test <id>\n  :models set <id> contextWindow <tok> - window for auto-compact\n:allow <path> / :deny <path> - sandbox\n:session - info | :session reset - clear saved session (tocoder -c resumes)\nEsc during work = abort run | Tool prompt: [Y]es [N]o [A]bort (Shift+A always) | ACL prompt: [P]File [F]Parent [N]o [A]bort\nPgUp/PgDn scroll`); return true; }
+:quick - quick commands (slots 1-5, per project): Ctrl+Q → digit overwrites input (editable); Ctrl+S (input non-empty) → digit saves it\n:agents - project instructions file (AGENTS.md), sent with every prompt\n  :agents init | edit | add <text> | rm <line>\n:init - create AGENTS.md with defaults\n:key - set Ollama Cloud API key\n:models - list | :models add/rm - wizards | :models test <id>\n  :models set <id> contextWindow <tok> - window for auto-compact\n:allow <path> / :deny <path> - sandbox\n:session - info | :session reset - clear saved session (tocoder -c resumes)\n:log [on|off] - toggle .tokoder/tocoder.log (default OFF)\nEsc during work = abort run | Tool prompt: [Y]es [N]o [A]bort (Shift+A always) | ACL prompt: [P]File [F]Parent [N]o [A]bort\nPgUp/PgDn scroll`); return true; }
     pushSystem(`Unknown command ":${c}". Try :help`); return true;
   };
 

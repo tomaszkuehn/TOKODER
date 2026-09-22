@@ -74,9 +74,11 @@ export type TokoderConfig = {
   maxSteps?: number;
   /** read-only mode: write/edit removed from tools, plan-only system prompt */
   planMode?: boolean;
+  /** generate .tokoder/tocoder.log (default OFF - enables TOCODER_LOGGING=1 or this flag) */
+  logging?: boolean;
 };
 
-export const DEFAULT_MAX_STEPS = 100;
+export const DEFAULT_MAX_STEPS = 500;
 
 export function normalizeMaxSteps(v: unknown): number {
   const n = typeof v === "number" ? v : parseInt(String(v ?? ""), 10);
@@ -267,7 +269,8 @@ export function loadConfig(cwd = process.cwd()): TokoderConfig {
   const compact = { ...(g?.compact ?? {}), ...(l?.compact ?? {}) };
   const maxSteps = normalizeMaxSteps(l?.maxSteps ?? g?.maxSteps);
   const planMode = l?.planMode ?? g?.planMode ?? false;
-  return { models, defaultModel: models.find((m) => m.id === defaultModel) ? defaultModel : models[0]?.id ?? defaultModel, compact, maxSteps, planMode };
+  const logging = l?.logging ?? g?.logging ?? false;
+  return { models, defaultModel: models.find((m) => m.id === defaultModel) ? defaultModel : models[0]?.id ?? defaultModel, compact, maxSteps, planMode, logging };
 }
 
 export function saveConfig(cfg: TokoderConfig, cwd = process.cwd(), scope?: "global" | "local"): string {

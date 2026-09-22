@@ -12,6 +12,10 @@ import { render } from "ink";
 import { App } from "./tui/App.js";
 import { runAgentFull, runParallel } from "./core/agent.js";
 import { listModels, resolveModel } from "./core/providers.js";
+import { loadConfig } from "./core/config.js";
+import { setLogging } from "./utils/logger.js";
+
+setLogging(!!loadConfig().logging);
 
 const program = new Command();
 program.name("tocoder").description("AI coding agent (Ink + AI SDK)").version("0.1.0");

@@ -19,6 +19,8 @@ AI coding agent for the terminal — clone of [opencode](https://github.com/anom
 - **Vim-style commands** — `:exit` `:compact` `:key` `:models` `:acl` `:allow`/`:deny` with ghost autocomplete (`Tab`/`Enter` completes)
 - **Project instructions (`AGENTS.md`)** — file appended to the system prompt on every call: output-discipline rules (token savings) + tool cheat-sheet. `:agents init` creates it with defaults, `:agents edit` opens `$EDITOR` (default notepad), `:agents add <text>` appends, `:agents rm <n>` deletes a numbered line; changes apply from the next prompt
 - **Compact** — 3 strategies (`reduce`/`balance`/`value`), optional steering instruction, auto-trigger at % of context window or absolute token limit (see below)
+- **Step budget** — 500 steps per run by default (0 = unlimited); persists per folder; "continue" after a limit stop resets it; `:steps <n>` to change
+- **Logging opt-in** — `.tokoder/tocoder.log` is **OFF by default**; enable via `"logging": true` in config, `TOCODER_LOGGING=1`, or `:log on` in TUI (`:log` toggles)
 - **Chat history** — keeps 20 turns, `1`-`9` auto-expands quoting the actual option text from the model's list
 - **CLI** — `tocoder` (also `tokoder` alias), `models`, `--all` parallel compare, `--no-tui` (prints `[tokens] ↑ ↓`), `--timeout <seconds>`
 - **Diagnostics** — `:models test <id>` checks Ollama `/api/tags` / `/v1/models`, shows `ECONNREFUSED`/`401`/`404` instead of silent hang; `TOCODER_DEBUG=1` logs per-step `finishReason`
@@ -56,7 +58,7 @@ Update: `git pull && npm run install:global` (or `npm install && npm run build` 
 | Scope | Location | Contents |
 |-------|----------|----------|
 | **Global** | `~/.config/tokoder/` | `config.json` (models + defaultModel), `access-rules.json` (defaults for new projects), `.env` (API keys) |
-| **Per-project** | `<project>/.tokoder/` | `.env`, `access-rules.json`, `quick.json`, `sessions/`, `tocoder.log` |
+| **Per-project** | `<project>/.tokoder/` | `.env`, `access-rules.json`, `quick.json`, `sessions/`, `tmp/` (Ctrl+V images), `tocoder.log` (opt-in) |
 
 Running `tokoder` in any folder **auto-creates `.tokoder/`** on first run, pre-filled with defaults (rules seeded from global; existing files never overwritten). Add `.tokoder/` to `.gitignore`.
 
@@ -198,6 +200,7 @@ scripts/tocoder.bat "prompt"
 | `:deny <path>` | revoke |
 | `:session` | session info (saved file, resume hint) |
 | `:session reset` | clear saved session for this folder |
+| `:log [on\|off]` | toggle debug log `.tokoder/tocoder.log` (default OFF; persists via `"logging": true` in config or `TOCODER_LOGGING=1`) |
 | **Ctrl+V** | **paste clipboard image** — saves PNG to `.tokoder/tmp/clipboard-*.png` and inserts `[image: <path> WxH]` chip into the input; the model can read the file with the `read` tool (metadata: dimensions, size) |
 | `:help` | help |
 
@@ -326,7 +329,7 @@ src/
     paths.ts          # appDir/appFile (.tokoder/) + globalAppDir (~/.config/tokoder)
     stats.ts          # LOC + env + duration + spinner styles (TOCODER_SPINNER) (ignores .tokoder)
     env.ts            # .tokoder/.env set/mask
-    logger.ts         # .tokoder/tocoder.log
+    logger.ts         # .tokoder/tocoder.log (opt-in: config "logging": true | TOCODER_LOGGING=1 | :log)
     markdown.ts       # terminal markdown renderer with ANSI colors (headings/code/lists/tables/quotes/links) + sanitizeCp437 (emoji → ASCII, non-ASCII stripped)
     ollama.ts         # listOllamaModels (local/cloud), id suggestion
     permissions.ts    # checkAccess (ACL modes), per-project rules (seeded from global), accessRequest marker, guard(mode), allow/deny
