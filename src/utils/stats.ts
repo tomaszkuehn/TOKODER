@@ -61,3 +61,16 @@ export function formatDuration(ms: number): string {
 export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
+
+/** spinner styles — ascii works on any codepage/font (conhost), braille needs UTF-8 font; pick via TOCODER_SPINNER */
+export const SPINNER_STYLES: Record<string, string[]> = {
+  ascii: ["|", "/", "-", "\\"],
+  dots: [".", "..", "...", "...."],
+  braille: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
+  arrow: ["←", "↖", "↑", "↗", "→", "↘", "↓", "↙"],
+};
+
+export function spinnerFrames(): string[] {
+  const style = String(process.env.TOCODER_SPINNER ?? "ascii").toLowerCase();
+  return SPINNER_STYLES[style] ?? SPINNER_STYLES.ascii;
+}

@@ -9,6 +9,10 @@ export type SessionState = {
   modelId: string;
   startedAt: string;
   updatedAt: string;
+  /** per-folder step budget consumed (0 = full budget available); reset with :steps reset or when budget exhausted+continued */
+  stepsUsed?: number;
+  /** cumulative sent/recv tokens per model id (persisted so restart+resume keeps counters) */
+  tokenStats?: Record<string, { sent: number; recv: number }>;
   history: { role: "user" | "assistant"; content: string }[];
 };
 
@@ -43,6 +47,8 @@ export function saveSession(s: Omit<SessionState, "version" | "cwd" | "updatedAt
     updatedAt: new Date().toISOString(),
     modelId: s.modelId,
     startedAt: s.startedAt,
+    stepsUsed: s.stepsUsed ?? 0,
+    tokenStats: s.tokenStats ?? {},
     history: s.history.slice(-40),
   };
   const p = sessionPath(cwd);

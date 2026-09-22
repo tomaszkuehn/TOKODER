@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { appDir, appFile } from "../utils/paths.js";
+import { validateConfig, ConfigError } from "./config.js";
 
 const QUICK_DEFAULT: Record<string, never> = {};
 
@@ -20,8 +21,18 @@ function defaultEnvTemplate(): string {
 /**
  * Idempotent bootstrap of the per-project .tokoder/ app dir.
  * Called once at CLI startup; never overwrites existing files.
+ * Config validation runs first: on ConfigError print the offending file + reason and exit(1).
  */
 export function bootstrapProject(cwd = process.cwd()): void {
+  try {
+    validateConfig(cwd);
+  } catch (e) {
+    if (e instanceof ConfigError) {
+      console.error(`\n${e.message}\n\nFix the file and run tokoder again. Docs: README.md → "Custom OpenAI-compatible providers".`);
+      process.exit(1);
+    }
+    throw e;
+  }
   try {
     mkdirSync(appDir(cwd), { recursive: true });
     for (const [file, content] of [

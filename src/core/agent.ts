@@ -36,6 +36,10 @@ export type AgentOpts = {
   supplementQueue?: string[];
   /** called with the formatted user message each time supplements are injected into the conversation */
   onSupplement?: (content: string) => void;
+  /** steps already consumed in this folder's budget (persisted per-project); runs start from here */
+  stepsUsed?: number;
+  /** called after every step with (stepsUsed, maxSteps) so the caller can persist the budget */
+  onSteps?: (stepsUsed: number, maxSteps: number) => void;
 };
 
 export type Usage = { inputTokens: number; outputTokens: number; totalTokens: number };
@@ -116,7 +120,9 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
   const stepText: string[] = [];
   let lastHadTools = false;
   let nudged = false;
-  let stepsUsed = 0;
+  /** callback reporting how many steps were consumed by this run (persisted per-folder by the TUI) */
+  opts.onSteps?.(0, maxSteps);
+  let stepsUsed = opts.stepsUsed ?? 0;
   /** drain supplements at step boundaries: format as "[user supplement while working] ..." user messages */
   const drainQueue = () => {
     if (!opts.supplementQueue?.length) return;
@@ -127,9 +133,11 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
     logEntry("SUPPLEMENT", cfg.id, content);
   };
   try {
+    let limitHit = false;
     for (let step = 0; ; step++) {
-      if (maxSteps > 0 && stepsUsed >= maxSteps) break;
+      if (maxSteps > 0 && stepsUsed >= maxSteps) { limitHit = true; break; }
       stepsUsed++;
+      opts.onSteps?.(stepsUsed, maxSteps);
       drainQueue();
       logEntry("TO-MODEL", cfg.id, JSON.stringify({ step, messages: msgs }, null, 2));
       opts.onContext?.(estimateMsgsTokens(msgs));
@@ -256,9 +264,12 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
       restartTimer();
       lastHadTools = true;
     }
-    logEntry("TOOL-LIMIT", cfg.id, `maxSteps=${maxSteps} reached — agent stopped after tool results with no final text. User should say "continue" to reset the budget or raise maxSteps.`);
-    yield `\n[⚠ stopped: step limit (${maxSteps}) reached after tool calls — say "continue" to reset and resume]`;
+    if (limitHit) {
+      logEntry("TOOL-LIMIT", cfg.id, `maxSteps=${maxSteps} reached — agent stopped after tool results with no final text. User should say "continue" to reset the budget or raise maxSteps.`);
+      yield `\n[⚠ stopped: step limit (${maxSteps}) reached after tool calls — say "continue" to reset and resume]`;
+    }
   } finally {
+    opts.onSteps?.(stepsUsed, maxSteps);
     clearTimeout(timeout);
     if (opts.abortSignal) opts.abortSignal.removeEventListener("abort", onExternalAbort);
   }

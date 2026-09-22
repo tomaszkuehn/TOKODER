@@ -1,6 +1,7 @@
 import { anthropic } from "@ai-sdk/anthropic";
 import { openai } from "@ai-sdk/openai";
 import { createOpenAI } from "@ai-sdk/openai";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { LanguageModel } from "ai";
 import type { ModelConfig } from "./config.js";
 import { loadConfig, getModelConfig } from "./config.js";
@@ -15,6 +16,15 @@ function requireKey(cfg: ModelConfig): string {
     throw new Error(`Missing API key for "${cfg.id}" (${cfg.apiKeyEnv ?? "OPENROUTER_API_KEY"}). Fix: :models key ${cfg.id} sk-or-...  or set ${cfg.apiKeyEnv ?? "OPENROUTER_API_KEY"} in .env then :models test ${cfg.id}`);
   }
   return v;
+}
+
+function requireCustomKey(cfg: ModelConfig): string {
+  const key = (cfg.apiKeyEnv ? process.env[cfg.apiKeyEnv]?.trim() : undefined) || process.env.CUSTOM_API_KEY?.trim();
+  // explicit apiKeyEnv = key required; otherwise keyless endpoints (local gateways) get a dummy
+  if (cfg.apiKeyEnv && (!key || key.length < 8)) {
+    throw new Error(`Missing API key for "${cfg.id}" (${cfg.apiKeyEnv}). Fix: :models key ${cfg.id} <key>  or set ${cfg.apiKeyEnv} in .env then :models test ${cfg.id}`);
+  }
+  return key ?? "sk-dummy";
 }
 
 export function getModelFromConfig(cfg: ModelConfig): LanguageModel {
@@ -51,6 +61,17 @@ export function getModelFromConfig(cfg: ModelConfig): LanguageModel {
       const client = createOpenAI({
         apiKey: key,
         baseURL: cfg.baseURL ?? "http://localhost:11434/v1",
+      });
+      return client(cfg.model);
+    }
+    case "custom": {
+      if (!cfg.baseURL) throw new Error(`Model "${cfg.id}" (provider "custom") requires baseURL — fix tokoder.config.json`);
+      const key = requireCustomKey(cfg);
+      const client = createOpenAICompatible({
+        name: cfg.id,
+        baseURL: cfg.baseURL,
+        apiKey: key,
+        headers: cfg.headers,
       });
       return client(cfg.model);
     }

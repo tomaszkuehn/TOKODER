@@ -10,7 +10,7 @@ AI coding agent for the terminal — clone of [opencode](https://github.com/anom
 - **Markdown rendering** — model answers render as colored markdown in the terminal: headings (`▌` cyan bold), bold/italic, `inline code` + fenced code blocks (green), bullet/numbered lists, blockquotes, tables, links; ANSI-aware wrapping keeps colors intact across wrapped lines; transcript dump keeps colors too
 - **Live supplements** — while the agent is working, type in the input and press Enter: the text is queued and injected into the conversation at the next step boundary (`[user supplement while working] …`), without aborting the run; queued items show in the input panel, undelivered ones are reported when the run ends
 - **ACL sandbox** — full access inside `cwd`; outside: Windows system folders always denied, per-mode rules (read/write/execute) persisted per project in `.tokoder/access-rules.json` (first run seeds from global `~/.config/tokoder/access-rules.json`); on first access outside rules the app asks `[P]File / [F]Parent folder / [N]o / [A]bort` and auto-retries the tool. Manage with `:acl`, `:acl set <mode> <yes|no>`, `:allow <path> [read|write|execute]`, `:deny <path>`
-- **Multi-model** — models via `tokoder.config.json` (Anthropic / OpenAI / OpenRouter / Ollama local + Ollama Cloud)
+- **Multi-model** — models via `tokoder.config.json` (Anthropic / OpenAI / OpenRouter / Ollama local + Ollama Cloud / any OpenAI-compatible provider e.g. cheaperinference.com)
 - **Interactive `:models add` wizard** — local/cloud Ollama with live model listing (`/api/tags`), auto-suggested free id (overridable); cloud requires key set first via `:key`
 - **Per-model token counters** — `id (1.1k↑/3.4k↓)` next to every model in header (0↑/0↓ when unused), `↑ sent ↓ recv` for active model + `∑` total, counted until app exit; real `usage` from provider per agent step, `len/4` fallback
 - **3-panel TUI** — fixed header/status/input (`flexShrink:0`), auto-scrolling output with scrollbar (`PgUp`/`PgDn` pauses, PgDn returns to bottom), editable `↑`/`↓` command history (incl. commands), wrap-aware flex status panel (responsive on narrow terminals), alt buffer with sync transcript dump (`TOCODER_ALT_SCREEN=0` disables), cwd shown in header, Esc cancels (exit only via `:exit`)
@@ -89,7 +89,41 @@ Local models override global entries with the same id and can add new ones; loca
 }
 ```
 
-Providers: `anthropic` | `openai` | `openrouter` | `ollama`. `baseURL` enables any OpenAI-compatible endpoint.
+Providers: `anthropic` | `openai` | `openrouter` | `ollama` | `custom`. `baseURL` enables any OpenAI-compatible endpoint.
+
+### Custom OpenAI-compatible providers (e.g. cheaperinference.com)
+
+Any provider speaking the OpenAI format works via the `providers` section — each entry expands into `models` automatically (ids: `<providerKey>-<modelSlug>`):
+
+```json
+{
+  "providers": {
+    "cheaper-inference": {
+      "name": "Cheaper Inference",
+      "baseURL": "https://api.cheaperinference.com/v1",
+      "apiKeyEnv": "CHEAPER_INFERENCE_API_KEY",
+      "models": {
+        "gpt-5.4": { "name": "GPT-5.4" }
+      }
+    }
+  },
+  "defaultModel": "cheaper-inference-gpt-5-4"
+}
+```
+
+Then set the key and test:
+```bash
+:models key cheaper-inference-gpt-5-4 <API_KEY>   # → CHEAPER_INFERENCE_API_KEY in .tokoder/.env
+:models test cheaper-inference-gpt-5-4
+```
+
+Or add a single model ad-hoc (`custom` provider, baseURL required):
+```bash
+:models add cheaper-gpt54 custom gpt-5.4 https://api.cheaperinference.com/v1 CHEAPER_INFERENCE_API_KEY
+:models key cheaper-gpt54 <API_KEY>
+```
+
+`apiKeyEnv` defaults to `CUSTOM_API_KEY` when omitted; endpoints without a key (local gateways) work with no key if `apiKeyEnv` is not set. Extra `headers` are supported in the `providers` entry.
 
 Local Qwen example:
 ```bash

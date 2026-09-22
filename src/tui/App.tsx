@@ -8,7 +8,7 @@ const require = createRequire(import.meta.url);
 import { runAgent, testConnection, type ToolDecision, type AccessDecision } from "../core/agent.js";
 import { loadConfig, saveConfig, normalizeCompact, compactLimit, normalizeMaxSteps, globalConfigPath, localConfigPath, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_STEPS } from "../core/config.js";
 import { compactHistory, estimateHistoryTokens, COMPACT_MODES, type CompactMode } from "../core/compact.js";
-import { countLOC, detectEnvs, formatDuration, estimateTokens } from "../utils/stats.js";
+import { countLOC, detectEnvs, formatDuration, estimateTokens, spinnerFrames } from "../utils/stats.js";
 import { setEnvKey, maskKey } from "../utils/env.js";
 import { logEntry } from "../utils/logger.js";
 import { listOllamaModels, ollamaIdSuggestion } from "../utils/ollama.js";
@@ -21,6 +21,7 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
   const { stdout } = useStdout();
   const [cfg, setCfg] = useState(() => loadConfig());
   const restored = useMemo(() => (initialModel ? null : loadSession()), []);
+  const restoredRef = useRef(restored ?? { version: 1 as const, cwd: process.cwd(), modelId: "", startedAt: new Date().toISOString(), updatedAt: "", stepsUsed: 0, tokenStats: {}, history: [] });
   const [modelId, setModelId] = useState(initialModel ?? restored?.modelId ?? cfg.defaultModel);
   const [input, setInput] = useState(initialPrompt ?? "");
   const [messages, setMessages] = useState<{ role: "user" | "assistant" | "system" | "error"; text: string }[]>(() => {
@@ -71,7 +72,7 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
   const [quickOpen, setQuickOpen] = useState(false);
   /** save mode armed by Ctrl+S (input non-empty): next digit 1-5 stores input */
   const [quickSave, setQuickSave] = useState(false);
-  const [tokenStats, setTokenStats] = useState<Record<string, { sent: number; recv: number }>>({});
+  const [tokenStats, setTokenStats] = useState<Record<string, { sent: number; recv: number }>>(() => (resumed && restored?.tokenStats) || {});
   const [loc, setLoc] = useState<number | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [lastErr, setLastErr] = useState<string | null>(null);
@@ -83,7 +84,7 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
   useEffect(() => { sessionModelRef.current = modelId; }, [modelId]);
   const persistSession = () => {
     try {
-      saveSession({ modelId: sessionModelRef.current, startedAt: startedAtRef.current, history: historyRef.current }, process.cwd());
+      saveSession({ modelId: sessionModelRef.current, startedAt: startedAtRef.current, history: historyRef.current, stepsUsed: restoredRef.current.stepsUsed, tokenStats }, process.cwd());
     } catch {}
   };
 
@@ -125,6 +126,11 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
     const id = setInterval(() => setElapsed(Date.now() - startRef.current), 1000);
     return () => clearInterval(id);
   }, []);
+
+  /** spinner animation while busy: frame advances every 80ms; run timer restarts on each busy period */
+  const frames = useRef<string[]>(spinnerFrames());
+  const runStartRef = useRef<number | null>(null);
+
 
   const altScreen = process.env.TOCODER_ALT_SCREEN !== "0";
   const transcriptRef = useRef<typeof messages>([] as any);
@@ -170,7 +176,21 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
   const innerW = Math.max(20, cols - 6);
   const viewportH = Math.max(1, outputH - 3); // borders(2) + title(1)
 
-  const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "◆ SYS:" : r === "error" ? "✗ ERR:" : "● AI:");
+/** isolated spinner: own timer + state → rerenders ONLY this fragment every 80ms, whole UI stays static */
+function Spinner({ label, showTime }: { label?: string; showTime?: boolean }) {
+  const frames = useRef(spinnerFrames());
+  const [frame, setFrame] = useState(0);
+  const [ms, setMs] = useState(0);
+  const startRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (startRef.current === null) startRef.current = Date.now();
+    const id = setInterval(() => { setFrame((f) => (f + 1) % frames.current.length); setMs(Date.now() - (startRef.current ?? Date.now())); }, 80);
+    return () => { clearInterval(id); startRef.current = null; };
+  }, []);
+  return <Text color="green" bold>{frames.current[frame % frames.current.length]} {label ?? "working…"}{showTime ? ` ${formatDuration(ms)}` : ""}</Text>;
+}
+
+const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "◆ SYS:" : r === "error" ? "✗ ERR:" : "● AI:");
 
   // flat line model: label line + wrapped text lines per message
   // assistant messages render as colored markdown; other roles plain
@@ -423,12 +443,19 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
     }
     if (c === "steps") {
       const cur = reloadCfg();
+      if (args[0]?.toLowerCase() === "reset") {
+        restoredRef.current.stepsUsed = 0; persistSession(); continueRef.current = false;
+        pushSystem(`✓ Step budget reset for this folder (0/${normalizeMaxSteps(cur.maxSteps)} used)`);
+        return true;
+      }
       if (!args[0]) {
-        pushSystem(`Step limit: ${normalizeMaxSteps(cur.maxSteps)}${normalizeMaxSteps(cur.maxSteps) === 0 ? " (unlimited)" : ` steps per run (0 = unlimited)`}\nAfter hitting the limit, say "continue" — budget resets and the run resumes with a fresh budget.\nChange: :steps <n> (saved to ${localConfigPath() ?? globalConfigPath()})`);
+        const used = restoredRef.current.stepsUsed ?? 0;
+        const lim = normalizeMaxSteps(cur.maxSteps);
+        pushSystem(`Step budget (per folder): ${used}/${lim === 0 ? "∞" : lim} used${lim === 0 ? " (unlimited)" : ""}\nBudget persists across sessions in this folder — :steps reset to refill.\nAfter hitting the limit, say "continue" — budget resets and the run resumes with a fresh budget.\nChange: :steps <n> (saved to ${localConfigPath() ?? globalConfigPath()})`);
         return true;
       }
       const n = parseInt(args[0], 10);
-      if (!Number.isFinite(n) || n < 0) { pushSystem("Steps: >= 0 (0 = unlimited). Usage: :steps <n>"); return true; }
+      if (!Number.isFinite(n) || n < 0) { pushSystem("Steps: >= 0 (0 = unlimited). Usage: :steps <n> | :steps reset"); return true; }
       cur.maxSteps = n;
       saveConfig(cur); reloadCfg();
       continueRef.current = false;
@@ -485,7 +512,7 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
     if (["models", "model", "providers"].includes(c)) {
       const sub = args[0]?.toLowerCase();
       const cur = reloadCfg();
-      if (!sub) { pushSystem(`MODELS (${cur.models.length}):\n${formatModels(cur)}\n\n:models <id> — switch\n:models add <id> <provider> <model> [baseURL]\n:models rm <id>\n:models default <id>\n:models key <id> <API_KEY>\n:models test <id>\n:models set <id> <field> <value>\n:models save <global|local> — copy merged config`); return true; }
+      if (!sub) { pushSystem(`MODELS (${cur.models.length}):\n${formatModels(cur)}\n\n:models <id> — switch\n:models add <id> <provider> <model> [baseURL]\n:models rm <id>\n:models default <id>\n:models key <id> <API_KEY>\n:models test <id>\n:models set <id> <field> <value>\n:models save <global|local> — copy merged config\n\nproviders: anthropic | openai | openrouter | ollama | custom (any OpenAI-compatible API, e.g. https://api.cheaperinference.com/v1)`); return true; }
       if (sub === "test") {
         const id = args[1] ?? modelId;
         const m = cur.models.find((x) => x.id === id);
@@ -503,11 +530,12 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
         const [id, provider, model, baseURL] = args.slice(1);
         if (!id && !provider) { setWizard({ step: "kind" }); pushSystem("ADD MODEL — wizard. Pick kind:"); return true; }
         if (!id || !provider || !model) { pushSystem("Usage: :models add <id> <provider> <model> [baseURL]  |  :models add — kreator interaktywny"); return true; }
-        if (!["anthropic", "openai", "openrouter", "ollama"].includes(provider)) { pushSystem(`Invalid provider "${provider}"`); return true; }
+        if (!["anthropic", "openai", "openrouter", "ollama", "custom"].includes(provider)) { pushSystem(`Invalid provider "${provider}" — use: anthropic | openai | openrouter | ollama | custom (OpenAI-compatible, baseURL required)`); return true; }
         if (cur.models.find((m) => m.id === id)) { pushSystem(`Model "${id}" already exists`); return true; }
-        const apiKeyEnv = provider === "anthropic" ? "ANTHROPIC_API_KEY" : provider === "openai" ? "OPENAI_API_KEY" : provider === "openrouter" ? "OPENROUTER_API_KEY" : undefined;
+        if (provider === "custom" && !baseURL) { pushSystem(`Provider "custom" requires baseURL: :models add <id> custom <model> <baseURL> [apiKeyEnv]`); return true; }
+        const apiKeyEnv = provider === "anthropic" ? "ANTHROPIC_API_KEY" : provider === "openai" ? "OPENAI_API_KEY" : provider === "openrouter" ? "OPENROUTER_API_KEY" : provider === "custom" ? (args[5] ?? "CUSTOM_API_KEY") : undefined;
         cur.models.push({ id, provider: provider as any, model, apiKeyEnv, baseURL });
-        const savedTo = saveConfig(cur); reloadCfg(); pushSystem(`Added ${id} (saved to ${savedTo}). Now: :models key ${id} <API_KEY>  and  :models test ${id}`); return true;
+        const savedTo = saveConfig(cur); reloadCfg(); pushSystem(`Added ${id} (saved to ${savedTo}).${provider === "custom" ? ` Now: :models key ${id} <API_KEY> (${apiKeyEnv}).` : ""} Then :models test ${id}`); return true;
       }
       if (["rm", "remove", "del"].includes(sub)) {
         const id = args[1];
@@ -543,7 +571,7 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
         if (!id || !field || !value) { pushSystem("Usage: :models set <id> <provider|model|baseURL|apiKeyEnv|contextWindow> <value>"); return true; }
         const m = cur.models.find((x) => x.id === id);
         if (!m) { pushSystem(`Not found: ${id}`); return true; }
-        if (field === "provider" && !["anthropic", "openai", "openrouter", "ollama"].includes(value)) { pushSystem(`Invalid provider`); return true; }
+        if (field === "provider" && !["anthropic", "openai", "openrouter", "ollama", "custom"].includes(value)) { pushSystem(`Invalid provider`); return true; }
         (m as any)[field] = value; const savedTo = saveConfig(cur); reloadCfg(); pushSystem(`Updated ${id} ${field}=${value} (saved to ${savedTo})`); return true;
       }
       pushSystem(`Unknown subcommand "${sub}". Try :models`); return true;
@@ -805,6 +833,11 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
       const isContinue = /^\s*(continue|kontynuuj|dalej|cd)\s*$/i.test(prompt);
       const useContinue = isContinue && continueRef.current;
       if (useContinue) continueRef.current = false;
+      /** per-folder step budget: consumed steps persist in session state across runs/sessions */
+      const budgetMax = useContinue ? 0 : normalizeMaxSteps(cfgRef.current.maxSteps);
+      const startSteps = useContinue ? 0 : restoredRef.current.stepsUsed;
+      if (useContinue) restoredRef.current.stepsUsed = 0;
+      const persistSteps = (used: number) => { restoredRef.current.stepsUsed = used; persistSession(); };
       let usageSent = false, usageRecv = false;
       let acc = ""; setMessages((m) => [...m, { role: "assistant", text: "" }]);
       const toolLog: string[] = [];
@@ -832,7 +865,9 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
         };
         for await (const chunk of runAgent(effectivePrompt, { modelId, timeoutMs: 300000, history, abortSignal: ac.signal,
           planMode: !!cfgRef.current.planMode,
-          maxSteps: useContinue ? 0 : normalizeMaxSteps(cfgRef.current.maxSteps),
+          maxSteps: budgetMax,
+          stepsUsed: startSteps,
+          onSteps: persistSteps,
           onToolApproval: async (name, args) => {
             if (autoOk(name, args)) return "yes";
             if (alwaysRef.current.has(name)) return "always";
@@ -926,6 +961,7 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
         <Box flexWrap="wrap" flexDirection="row" columnGap={2}>
           <Text><Text color="cyan">Model: </Text><Text bold>{active.id}</Text><Text dimColor> ({active.provider}/{active.model})</Text></Text>
           <Text><Text color="green">↑ {curTok.sent.toLocaleString("en-US")}</Text><Text dimColor> sent</Text><Text> </Text><Text color="magenta">↓ {curTok.recv.toLocaleString("en-US")}</Text><Text dimColor> recv</Text></Text>
+          {busy && <Spinner showTime />}
           {usedModels.length > 1 && <Text dimColor>(∑ {usedModels.length} models: ↑{totTok.sent.toLocaleString("en-US")} ↓{totTok.recv.toLocaleString("en-US")})</Text>}
         </Box>
         <Box flexWrap="wrap" flexDirection="row" columnGap={2}>
@@ -938,7 +974,7 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
       </Box>
 
       <Box flexGrow={1} flexShrink={1} flexDirection="column" overflow="hidden" borderStyle="round" borderColor="green" marginTop={1} paddingX={1} height={outputH}>
-        <Box flexShrink={0}><Text bold color="green">● MODEL RESPONSE {busy ? "(writing…)" : ""}</Text><Text dimColor>{moreAbove ? " ↑more" : ""}{moreBelow ? " ↓end" : ""} {flatLines.length > viewportH ? `[${startIdx + 1}-${startIdx + visibleLines.length}/${flatLines.length} lines]` : ""}</Text></Box>
+        <Box flexShrink={0}><Text bold color="green">{busy ? <Spinner label="MODEL RESPONSE" /> : "● MODEL RESPONSE"}</Text><Text dimColor>{moreAbove ? " ↑more" : ""}{moreBelow ? " ↓end" : ""} {flatLines.length > viewportH ? `[${startIdx + 1}-${startIdx + visibleLines.length}/${flatLines.length} lines]` : ""}</Text></Box>
         <Box flexDirection="row">
           <Box flexDirection="column" width={innerW - 1} flexShrink={0}>
             {visibleLines.length === 0 && messages.length === 0 && !busy && <Text dimColor> No messages — :help</Text>}
