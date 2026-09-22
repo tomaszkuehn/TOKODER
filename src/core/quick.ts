@@ -45,7 +45,7 @@ export function setQuickSlot(map: QuickMap, slot: number, text: string): QuickMa
 export function formatQuick(map: QuickMap): string {
   const rows = Array.from({ length: QUICK_SLOTS }, (_, i) => i + 1).map((n) => {
     const s = map[String(n)];
-    return `${n}| ${s ? `${s.label}${s.text.length > 40 ? "…" : ""}` : "— empty —"}`;
+    return `${n}| ${s ? `${s.label}${s.text.length > 40 ? "…" : ""}` : "- empty -"}`;
   });
   return rows.join("\n");
 }

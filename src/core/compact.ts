@@ -53,11 +53,11 @@ export async function compactHistory(opts: {
   const removed = opts.history.length - kept.length;
   if (mode === "reduce") {
     const dropped = opts.history.slice(0, removed);
-    const summary = `[MECHANICAL COMPACT] Dropped ${removed} oldest messages. First lines of what was dropped:\n${dropped.map((m) => `${m.role}: ${m.content.slice(0, 120).replace(/\n/g, " ")}`).join("\n") || "—"}`;
+    const summary = `[MECHANICAL COMPACT] Dropped ${removed} oldest messages. First lines of what was dropped:\n${dropped.map((m) => `${m.role}: ${m.content.slice(0, 120).replace(/\n/g, " ")}`).join("\n") || "-"}`;
     return { summary, kept, removed, mode, instruction };
   }
   const transcript = opts.history.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join("\n\n");
-  const prompt = `${PROMPTS[mode]}${instruction ? `\n\nAdditional user instruction — honor it in the summary: "${instruction}"` : ""}\n\n=== CONVERSATION ===\n${transcript}`;
+  const prompt = `${PROMPTS[mode]}${instruction ? `\n\nAdditional user instruction - honor it in the summary: "${instruction}"` : ""}\n\n=== CONVERSATION ===\n${transcript}`;
   logEntry("COMPACT-REQUEST", modelConfig.id, prompt.slice(0, 4000));
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), opts.timeoutMs ?? 120_000);

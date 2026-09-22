@@ -62,12 +62,12 @@ export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
-/** spinner styles — ascii works on any codepage/font (conhost), braille needs UTF-8 font; pick via TOCODER_SPINNER */
+/** spinner styles - ascii works on any codepage/font (conhost), braille needs UTF-8 font; pick via TOCODER_SPINNER */
 export const SPINNER_STYLES: Record<string, string[]> = {
   ascii: ["|", "/", "-", "\\"],
   dots: [".", "..", "...", "...."],
-  braille: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
-  arrow: ["←", "↖", "↑", "↗", "→", "↘", "↓", "↙"],
+  braille: ["@", "%", "#", "*", "+", "="],
+  arrow: ["←", "^", "↑", ">", "→", "v", "↓", "<"],
 };
 
 export function spinnerFrames(): string[] {

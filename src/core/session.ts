@@ -13,6 +13,8 @@ export type SessionState = {
   stepsUsed?: number;
   /** cumulative sent/recv tokens per model id (persisted so restart+resume keeps counters) */
   tokenStats?: Record<string, { sent: number; recv: number }>;
+  /** command/prompt history for ↑↓ recall after resume */
+  cmdHistory?: string[];
   history: { role: "user" | "assistant"; content: string }[];
 };
 
@@ -49,6 +51,7 @@ export function saveSession(s: Omit<SessionState, "version" | "cwd" | "updatedAt
     startedAt: s.startedAt,
     stepsUsed: s.stepsUsed ?? 0,
     tokenStats: s.tokenStats ?? {},
+    cmdHistory: s.cmdHistory ?? [],
     history: s.history.slice(-40),
   };
   const p = sessionPath(cwd);

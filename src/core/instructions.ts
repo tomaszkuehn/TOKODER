@@ -11,9 +11,9 @@ export const DEFAULT_INSTRUCTIONS = `# Agent instructions
 - One clarifying question beats a wrong guess.
 
 ## Available tools
-- read/write/edit — files (write creates dirs; edit is exact-match replace)
-- bash — commands (PowerShell on Windows; Linux-style commands auto-route to WSL bash)
-- glob/grep — find files / search contents
+- read/write/edit - files (write creates dirs; edit is exact-match replace)
+- bash - commands (PowerShell on Windows; Linux-style commands auto-route to WSL bash)
+- glob/grep - find files / search contents
 - Prefer glob/grep to locate code before editing. Verify changes with bash (typecheck/tests).
 
 ## Conventions
@@ -62,5 +62,5 @@ export function removeInstructionLine(n: number, cwd = process.cwd()): string | 
 export function buildSystemPrompt(base: string, cwd = process.cwd()): string {
   const instr = readInstructions(cwd);
   if (!instr?.trim()) return base;
-  return `${base}\n\n# PROJECT INSTRUCTIONS (from ${INSTRUCTIONS_FILE} in project root — follow them)\n${instr}`;
+  return `${base}\n\n# PROJECT INSTRUCTIONS (from ${INSTRUCTIONS_FILE} in project root - follow them)\n${instr}`;
 }

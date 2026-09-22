@@ -78,7 +78,7 @@ const PLAN_NOTE = `\n\n# PLAN MODE (read-only)\nYou are in PLAN MODE. You MUST N
 - Only read/glob/grep/inspect bash (e.g. type, git log, git diff, npm test without fixes) is allowed.
 - End your turn with a concrete PLAN: numbered steps, files to touch, and how to verify. The user will approve it before any change is made.`;
 
-/** bash subcommands that mutate things — denied in plan mode */
+/** bash subcommands that mutate things - denied in plan mode */
 const PLAN_BASH_DENY: RegExp[] = [
   /(^|[\s"'`(=;&|])(npm|pnpm|yarn|pip|cargo|dotnet|apt|choco|winget|scoop)\s+(install|add|remove|uninstall|update|upgrade|publish)\b/i,
   /(^|[\s"'`(=;&|])(rm|del|rmdir|Remove-Item|rmdir|mv|Move-Item|git\s+(add|commit|push|reset|checkout|restore|clean|merge|rebase)|touch|New-Item|Set-Content|Out-File|Copy-Item)\b/i,
@@ -170,17 +170,17 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
           }
         }
       } catch (e: any) {
-        if (e.name === "AbortError") throw new AgentError(`[${cfg.id}] timeout after ${(opts.timeoutMs ?? 300000) / 1000}s — model was still working (tools). Retry with higher --timeout`, "TIMEOUT");
+        if (e.name === "AbortError") throw new AgentError(`[${cfg.id}] timeout after ${(opts.timeoutMs ?? 300000) / 1000}s - model was still working (tools). Retry with higher --timeout`, "TIMEOUT");
         const msg = e.message ?? String(e);
         if (msg.includes("Missing Authentication") || msg.includes("No auth") || msg.includes("API key"))
-          throw new AgentError(`[${cfg.id}] Missing Authentication — no key for ${cfg.apiKeyEnv ?? "OPENROUTER_API_KEY"}. Fix: :models key ${cfg.id} sk-or-...  then :models test ${cfg.id}`, "401");
+          throw new AgentError(`[${cfg.id}] Missing Authentication - no key for ${cfg.apiKeyEnv ?? "OPENROUTER_API_KEY"}. Fix: :models key ${cfg.id} sk-or-...  then :models test ${cfg.id}`, "401");
         if (msg.includes("ECONNREFUSED") || msg.includes("Failed to fetch") || msg.includes("fetch failed"))
           throw new AgentError(`[${cfg.id}] connection failed → ${cfg.baseURL ?? cfg.provider} not reachable. Is Ollama running? (ollama serve)`, "ECONNREFUSED");
-        if (msg.includes("401") || msg.includes("Unauthorized")) throw new AgentError(`[${cfg.id}] 401 Unauthorized — wrong API key (${cfg.apiKeyEnv}) — :models key ${cfg.id} <key>`, "401");
+        if (msg.includes("401") || msg.includes("Unauthorized")) throw new AgentError(`[${cfg.id}] 401 Unauthorized - wrong API key (${cfg.apiKeyEnv}) - :models key ${cfg.id} <key>`, "401");
         if (msg.includes("404")) throw new AgentError(`[${cfg.id}] 404 model "${cfg.model}" not found on ${cfg.baseURL ?? cfg.provider}`, "404");
         throw new AgentError(`[${cfg.id}] ${msg}`, e.code);
       }
-      if (timeoutFired) throw new AgentError(`[${cfg.id}] timeout after ${(opts.timeoutMs ?? 300000) / 1000}s — model was still working (tools). Retry with higher --timeout`, "TIMEOUT");
+      if (timeoutFired) throw new AgentError(`[${cfg.id}] timeout after ${(opts.timeoutMs ?? 300000) / 1000}s - model was still working (tools). Retry with higher --timeout`, "TIMEOUT");
       {
         const parts: any[] = [];
         if (stepText.length) parts.push({ text: stepText.join("") });
@@ -196,21 +196,28 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
       let fr: any = null;
       try { fr = await result.finishReason; } catch {}
       if (process.env.TOCODER_DEBUG) console.error(`[debug] step=${step} finishReason=${JSON.stringify(fr)} toolCalls=${pendingCalls.length}`);
-      if (fr === "length") yield "\n[⚠ output truncated — max tokens reached; ask to continue]";
+      if (fr === "length") yield "\n[! output truncated - max tokens reached; ask to continue]";
       try {
         const usage: any = await result.usage;
-        if (usage && onUsage) onUsage({ inputTokens: usage.inputTokens ?? 0, outputTokens: usage.outputTokens ?? 0, totalTokens: usage.totalTokens ?? 0 });
+        if (usage && onUsage) {
+          const input = usage.inputTokens ?? 0;
+          let output = usage.outputTokens ?? 0;
+          const total = usage.totalTokens ?? 0;
+          /** some OpenAI-compatible proxies report total but 0 output - derive it */
+          if (!output && total > input) output = total - input;
+          onUsage({ inputTokens: input, outputTokens: output, totalTokens: total });
+        }
       } catch {}
       if (!pendingCalls.length || fr === "length") {
         if (!pendingCalls.length && !stepText.length && lastHadTools && !nudged) {
           nudged = true;
-          yield "\n[no final summary from model — nudging to finish]";
+          yield "\n[no final summary from model - nudging to finish]";
           msgs.push({ role: "assistant", content: [{ type: "text", text: "(no text)" }] });
           msgs.push({
             role: "user",
             content: "[system] The previous turn ended with tool calls but no final text. The tools already ran. Reply with a SHORT final summary now (what was done, files touched, how to verify). Do not call any tools unless something failed.",
           });
-          logEntry("NUDGE", cfg.id, "empty final response after tool step — retrying once with continuation prompt");
+          logEntry("NUDGE", cfg.id, "empty final response after tool step - retrying once with continuation prompt");
           continue;
         }
         break;
@@ -265,8 +272,8 @@ export async function* runAgent(prompt: string, opts: AgentOpts & { history?: { 
       lastHadTools = true;
     }
     if (limitHit) {
-      logEntry("TOOL-LIMIT", cfg.id, `maxSteps=${maxSteps} reached — agent stopped after tool results with no final text. User should say "continue" to reset the budget or raise maxSteps.`);
-      yield `\n[⚠ stopped: step limit (${maxSteps}) reached after tool calls — say "continue" to reset and resume]`;
+      logEntry("TOOL-LIMIT", cfg.id, `maxSteps=${maxSteps} reached - agent stopped after tool results with no final text. User should say "continue" to reset the budget or raise maxSteps.`);
+      yield `\n[! stopped: step limit (${maxSteps}) reached after tool calls - say "continue" to reset and resume]`;
     }
   } finally {
     opts.onSteps?.(stepsUsed, maxSteps);
@@ -295,8 +302,8 @@ export async function testConnection(cfg: ModelConfig, timeoutMs = 5000): Promis
       const j: any = await res.json();
       const models = (j.models ?? []).map((m: any) => m.name);
       if (models.length && !models.includes(cfg.model) && !models.some((n: string) => cfg.model.startsWith(n)))
-        return { ok: false, msg: `Connected but model "${cfg.model}" not found. Available: ${models.join(", ") || "—"}` };
-      return { ok: true, msg: `OK — ${models.length ? models.join(", ") : "no models listed"}` };
+        return { ok: false, msg: `Connected but model "${cfg.model}" not found. Available: ${models.join(", ") || "-"}` };
+      return { ok: true, msg: `OK - ${models.length ? models.join(", ") : "no models listed"}` };
     } catch (e: any) {
       return { ok: false, msg: e.name === "TimeoutError" ? `timeout ${timeoutMs}ms → ${url}` : `${e.message} → ${url} (is ollama running?)` };
     }

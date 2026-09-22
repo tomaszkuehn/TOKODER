@@ -10,11 +10,11 @@ export type ModelConfig = {
   contextWindow?: number;
   /** extra HTTP headers (custom OpenAI-compatible providers) */
   headers?: Record<string, string>;
-  /** where the model was loaded from — set by loadConfig, stripped on save */
+  /** where the model was loaded from - set by loadConfig, stripped on save */
   source?: "global" | "local";
 };
 
-/** OpenAI-compatible provider definition (e.g. cheaperinference.com) — expanded to models on load */
+/** OpenAI-compatible provider definition (e.g. cheaperinference.com) - expanded to models on load */
 export type ProviderConfig = {
   /** display name (default: provider key) */
   name?: string;
@@ -167,12 +167,12 @@ export function validateConfig(cwd = process.cwd()): { checked: string[] } {
       if (!m || typeof m !== "object") err(file, `${at} must be an object`);
       if (typeof m.id !== "string" || !m.id.trim()) err(file, `${at}.id must be a non-empty string`);
       if (typeof m.model !== "string" || !m.model.trim()) err(file, `${at}.model must be a non-empty string`);
-      if (!KNOWN_PROVIDERS.includes(m.provider)) err(file, `${at}.provider "${m.provider}" unknown — use: ${KNOWN_PROVIDERS.join(" | ")}`);
+      if (!KNOWN_PROVIDERS.includes(m.provider)) err(file, `${at}.provider "${m.provider}" unknown - use: ${KNOWN_PROVIDERS.join(" | ")}`);
       if (m.provider === "custom" && typeof m.baseURL !== "string") err(file, `${at} (custom) requires "baseURL"`);
       if (m.apiKeyEnv !== undefined && (typeof m.apiKeyEnv !== "string" || !m.apiKeyEnv.trim()))
         err(file, `${at}.apiKeyEnv must be a non-empty string or omitted`);
       if (m.apiKeyEnv && /^[A-Za-z0-9_]*={0,2}$/.test(m.apiKeyEnv) === false)
-        err(file, `${at}.apiKeyEnv "${m.apiKeyEnv}" looks like a literal API key, not an env var name — move the key to ~/.config/tokoder/.env and put the variable name here`);
+        err(file, `${at}.apiKeyEnv "${m.apiKeyEnv}" looks like a literal API key, not an env var name - move the key to ~/.config/tokoder/.env and put the variable name here`);
       if (m.contextWindow !== undefined && (typeof m.contextWindow !== "number" || m.contextWindow < 1))
         err(file, `${at}.contextWindow must be a positive number`);
     });
@@ -187,7 +187,7 @@ export function validateConfig(cwd = process.cwd()): { checked: string[] } {
       if (p.apiKeyEnv !== undefined && (typeof p.apiKeyEnv !== "string" || !p.apiKeyEnv.trim()))
         err(file, `${at}.apiKeyEnv must be a non-empty string or omitted`);
       if (p.apiKeyEnv && /:/i.test(String(p.apiKeyEnv)))
-        err(file, `${at}.apiKeyEnv "${p.apiKeyEnv}" looks like a literal API key, not an env var name — move the key to ~/.config/tokoder/.env and put the variable name here`);
+        err(file, `${at}.apiKeyEnv "${p.apiKeyEnv}" looks like a literal API key, not an env var name - move the key to ~/.config/tokoder/.env and put the variable name here`);
       if (p.headers !== undefined && (typeof p.headers !== "object" || p.headers === null || Array.isArray(p.headers)))
         err(file, `${at}.headers must be an object`);
       if (p.models !== undefined) {

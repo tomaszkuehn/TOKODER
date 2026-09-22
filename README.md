@@ -5,14 +5,16 @@ AI coding agent for the terminal — clone of [opencode](https://github.com/anom
 ## Features
 
 - **Agent loop** with tool calling (`read`, `write`, `edit`, `bash`, `glob`, `grep`) — manual multi-step loop (`stepCountIs`), 300s timeout per step, typed errors, always replies even if text empty
-- **Session memory** — model + conversation context are auto-saved per project after each turn (`.tokoder/sessions/`). Start `tocoder -c` to resume the last session in this folder (restores model and history); `:session reset` clears it
+- **Session memory** — model + conversation context + **command history (↑/↓)** + **per-model token counters** are auto-saved per project after each turn (`.tokoder/sessions/`). Start `tocoder -c` to resume the last session in this folder (restores model, history, tokens, commands); `:session reset` clears it
+- **CP437-safe UI** — all chrome (frames, labels, system messages) and **model output** are sanitized to ASCII (`✅→[OK]`, `⚠️→[!]`, `❌→[X]`, emoji dropped), so conhost on codepage 437 never renders garbage; arrows `↑↓` stay (render fine); spinner styles via `TOCODER_SPINNER` (`ascii` default | `dots` | `braille` | `arrow`)
 - **Tool approval** — in-project targets run automatically; only `bash` commands touching absolute/`~`/`$env:` paths or out-of-project workdirs ask `[Y]es / [N]o / [A]bort run` (Shift+A = always for that tool this session); Esc aborts the run. **Read-only bash commands** (`cat`, `type`, `dir`, `git log`, `npm test`, …) don't prompt — they go through `read` rules (unlimited read by default); mutating commands (`>` redirect, `Remove-Item`, `git commit`, `npm install`, `curl`, …) prompt only when they reference paths outside the project
-- **Markdown rendering** — model answers render as colored markdown in the terminal: headings (`▌` cyan bold), bold/italic, `inline code` + fenced code blocks (green), bullet/numbered lists, blockquotes, tables, links; ANSI-aware wrapping keeps colors intact across wrapped lines; transcript dump keeps colors too
+- **Markdown rendering** — model answers render as colored markdown in the terminal: headings (`|` cyan bold), bold/italic, `inline code` + fenced code blocks (green), bullet/numbered lists, blockquotes, tables, links; ANSI-aware wrapping keeps colors intact across wrapped lines; transcript dump keeps colors too
 - **Live supplements** — while the agent is working, type in the input and press Enter: the text is queued and injected into the conversation at the next step boundary (`[user supplement while working] …`), without aborting the run; queued items show in the input panel, undelivered ones are reported when the run ends
 - **ACL sandbox** — full access inside `cwd`; outside: Windows system folders always denied, per-mode rules (read/write/execute) persisted per project in `.tokoder/access-rules.json` (first run seeds from global `~/.config/tokoder/access-rules.json`); on first access outside rules the app asks `[P]File / [F]Parent folder / [N]o / [A]bort` and auto-retries the tool. Manage with `:acl`, `:acl set <mode> <yes|no>`, `:allow <path> [read|write|execute]`, `:deny <path>`
 - **Multi-model** — models via `tokoder.config.json` (Anthropic / OpenAI / OpenRouter / Ollama local + Ollama Cloud / any OpenAI-compatible provider e.g. cheaperinference.com)
+- **Anti-flicker spinner** — spinner is an isolated component with its own 80ms timer; only it rerenders during work, the rest of the UI stays static (no full-frame flicker)
 - **Interactive `:models add` wizard** — local/cloud Ollama with live model listing (`/api/tags`), auto-suggested free id (overridable); cloud requires key set first via `:key`
-- **Per-model token counters** — `id (1.1k↑/3.4k↓)` next to every model in header (0↑/0↓ when unused), `↑ sent ↓ recv` for active model + `∑` total, counted until app exit; real `usage` from provider per agent step, `len/4` fallback
+- **Per-model token counters** — `id (1.1k↑/3.4k↓)` next to every model in header (0↑/0↓ when unused); STATUS shows **total sent/recv across all models**; counters persist in the session file (`.tokoder/sessions/`) and survive resume (`-c`) and mid-run aborts; real `usage` from provider per agent step (proxies reporting `totalTokens` with 0 `outputTokens` are derived as `total - input`), `len/4` estimate fallback on abort
 - **3-panel TUI** — fixed header/status/input (`flexShrink:0`), auto-scrolling output with scrollbar (`PgUp`/`PgDn` pauses, PgDn returns to bottom), editable `↑`/`↓` command history (incl. commands), wrap-aware flex status panel (responsive on narrow terminals), alt buffer with sync transcript dump (`TOCODER_ALT_SCREEN=0` disables), cwd shown in header, Esc cancels (exit only via `:exit`)
 - **Vim-style commands** — `:exit` `:compact` `:key` `:models` `:acl` `:allow`/`:deny` with ghost autocomplete (`Tab`/`Enter` completes)
 - **Project instructions (`AGENTS.md`)** — file appended to the system prompt on every call: output-discipline rules (token savings) + tool cheat-sheet. `:agents init` creates it with defaults, `:agents edit` opens `$EDITOR` (default notepad), `:agents add <text>` appends, `:agents rm <n>` deletes a numbered line; changes apply from the next prompt
@@ -241,29 +243,30 @@ History compaction replaces old turns with a model-generated summary + keeps rec
 ## TUI Layout
 
 ```
-┌─ TOKODER — D:\projects\app ────────────────┐
-│ ● claude-sonnet (1.1k↑/3.4k↓) ○ gpt-4o (0↑/0↓) │  ← per-model tokens (1k precision)
-├─ STATUS ───────────────────────────────────┤
-│ Model: claude-sonnet (...)  ↑ 1,234 sent ↓ 567 recv │  ← wraps on narrow terminals
-│ LOC: 2,069  Time: 00:05:23  Env: ✓WSL ✓Android ✓Node │
-├─ AI RESPONSE (auto-scroll + scrollbar) ────┤
-│ ● AI: ...                               █  │  ← PgUp/PgDn pauses
+┌─ TOKODER - D:\projects\app ────────────────┐
+│ * claude-sonnet (1.1k↑/3.4k↓) o gpt-4o (0↑/0↓) │  ← per-model tokens (1k precision), * = active
+├─ * STATUS ─────────────────────────────────┤
+│ Model: claude-sonnet (...)  [spinner]      │
+│ Tokens: ↑2,345 sent ↓789 recv              │  ← total across all models
+│ LOC: 2,069  Time: 00:05:23  Env: +WSL +Android +Node │
+├─ * MODEL RESPONSE (auto-scroll + scrollbar) ┤
+│ • AI: ...                               #  │  ← PgUp/PgDn pauses
 ├─ INPUT ────────────────────────────────────┤
-│ › your command ▌                           │
-│ ⚡ Tool: bash {"command":"g++ ..."}         │  ← pending approval (out-of-project / risky cmd only)
+│ › your command                             │
+│ -> Tool: bash {"command":"g++ ..."}        │  ← pending approval (out-of-project / risky cmd only)
 │ [Y]es  [N]o  [A]bort  (Shift+A = always)   │
-│ 🔒 ACCESS OUTSIDE PROJECT (write)          │  ← ACL prompt
+│ [ACL] ACCESS OUTSIDE PROJECT (write)       │  ← ACL prompt
 │    D:\outside\file.txt                     │
 │ [P]File  [F]Parent  [N]o  [A]bort run      │
 └────────────────────────────────────────────┘
 ```
 
 - **Header**: `TOKODER` + cwd (bold yellow), per-model token counters
-- **Status**: flex-wrap segments — on narrow terminals `Model:`/tokens/`LOC`/`Time`/`Env`/`Compact` move whole to next line instead of breaking
-- **Output**: flat line-viewport (wrap-aware), auto-follows bottom during streaming; scrollbar column `█/│` on the right; PgDn returns to live bottom
+- **Status**: `Model:` + spinner; `Tokens:` = **sum over all models** (green sent / yellow recv); second row `LOC`/`Time`/`Env`/`Compact` flex-wraps on narrow terminals
+- **Output**: flat line-viewport (wrap-aware), auto-follows bottom during streaming; scrollbar column `#` on the right; PgDn returns to live bottom
 - **Input**: `flexWrap="wrap"`, `↑`/`↓` history `(n/N)` — editable without losing position, ghost `suggestion`
 - **LOC**: `src/utils/stats.ts` (ignores `node_modules`, `dist`, `.git`)
-- **Tokens**: per-model `usage` per agent step + `len/4` fallback; reset only on exit
+- **Tokens**: per-model `usage` per agent step + `len/4` fallback; persisted per session; reset only on exit or `:session reset`
 - **Envs**: WSL / Android / Node
 - **Alt buffer**: `\x1b[?1049h/l`, sync `writeSync` dump on unmount
 
@@ -273,7 +276,7 @@ History compaction replaces old turns with a model-generated summary + keeps rec
 
 **Free OpenRouter models** — check https://openrouter.ai/models (filter `:free`); id must match exactly (e.g. `poolside/laguna-s-2.1:free`, not `laguna-m.1:free`). `:models set <id> model <slug>`.
 
-**No visible response** — tool calls log `→ tool`/`← result`, `SYSTEM` forces final answer, empty `text` shows `[tools used]` fallback.
+**No visible response** — tool calls log `-> tool`/`<- result`, `SYSTEM` forces final answer, empty `text` shows `[tools used]` fallback.
 
 **Choice `1`-`9` ignored** — now expands quoting the option text from the model's last list, with 20-turn history.
 
@@ -294,6 +297,8 @@ ollama serve               # if ECONNREFUSED
 
 Common: `404` → wrong `model`; `ECONNREFUSED` → not running; `401` → wrong `apiKeyEnv`.
 
+**Garbled glyphs in output (`✅ ⚠️ ◆ █` as junk)** — console is on codepage 437: all UI chrome and model output are sanitized to ASCII (`sanitizeCp437` in `src/utils/markdown.ts`); emoji become `[OK]`/`[!]`/`[X]`, everything non-ASCII is stripped. Spinner font: `TOCODER_SPINNER=ascii`.
+
 **Wraps / history gone off edge** — fixed `wrap="wrap"` + `innerW`, `↑`/`↓` for history, `PgUp`/`PgDn` for scroll.
 
 **Terminal closes on exit** — sync `writeSync` dump, `TOCODER_ALT_SCREEN=0` to disable alt buffer.
@@ -313,13 +318,13 @@ src/
     session.ts        # per-project session persistence (.tokoder/sessions/)
     quick.ts          # quick commands slots 1-5 (.tokoder/quick.json)
   tools/              # read / write / edit / bash / glob / grep (ACL-guarded); agentTools (schemas) + executors; bash screenCommand mode-classifies commands (read vs write rules)
-  tui/App.tsx         # Ink 3-panel, vim, autocomplete, editable history, auto-scroll + scrollbar, tool approval + ACL prompt (abort), per-model token stats, :models add/rm wizards, auto-compact, markdown output, live supplements
+  tui/App.tsx         # Ink 3-panel, vim, autocomplete, editable history, auto-scroll + scrollbar, tool approval + ACL prompt (abort), per-model token stats (persisted, summed in STATUS), :models add/rm wizards, auto-compact, markdown output, live supplements, isolated anti-flicker spinner
   utils/
     paths.ts          # appDir/appFile (.tokoder/) + globalAppDir (~/.config/tokoder)
-    stats.ts          # LOC + env + duration (ignores .tokoder)
+    stats.ts          # LOC + env + duration + spinner styles (TOCODER_SPINNER) (ignores .tokoder)
     env.ts            # .tokoder/.env set/mask
     logger.ts         # .tokoder/tocoder.log
-    markdown.ts       # terminal markdown renderer with ANSI colors (headings/code/lists/tables/quotes/links)
+    markdown.ts       # terminal markdown renderer with ANSI colors (headings/code/lists/tables/quotes/links) + sanitizeCp437 (emoji → ASCII, non-ASCII stripped)
     ollama.ts         # listOllamaModels (local/cloud), id suggestion
     permissions.ts    # checkAccess (ACL modes), per-project rules (seeded from global), accessRequest marker, guard(mode), allow/deny
 scripts/

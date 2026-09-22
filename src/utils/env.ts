@@ -33,7 +33,7 @@ export function setEnvKey(key: string, value: string, cwd = process.cwd()): void
 }
 
 export function maskKey(v: string): string {
-  if (!v) return "—";
+  if (!v) return "-";
   if (v.length <= 8) return "•".repeat(v.length);
   return v.slice(0, 4) + "•".repeat(Math.min(12, v.length - 8)) + v.slice(-4);
 }

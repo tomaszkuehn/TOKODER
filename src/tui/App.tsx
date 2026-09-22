@@ -14,7 +14,7 @@ import { logEntry } from "../utils/logger.js";
 import { listOllamaModels, ollamaIdSuggestion } from "../utils/ollama.js";
 import { loadSession, saveSession, clearSession } from "../core/session.js";
 import { loadQuick, saveQuick, setQuickSlot, formatQuick, type QuickMap } from "../core/quick.js";
-import { renderMarkdown, stripAnsi } from "../utils/markdown.js";
+import { renderMarkdown, stripAnsi, sanitizeCp437 } from "../utils/markdown.js";
 
 export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: string; initialModel?: string; resumed?: boolean }) {
   const { exit } = useApp();
@@ -27,15 +27,15 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
   const [messages, setMessages] = useState<{ role: "user" | "assistant" | "system" | "error"; text: string }[]>(() => {
     if (resumed && restored?.history?.length) {
       const out: { role: "user" | "assistant" | "system" | "error"; text: string }[] = [
-        { role: "system", text: `↻ Session restored (${restored.history.length} messages, model: ${restored.modelId}, saved: ${restored.updatedAt ?? "?"}).` },
+        { role: "system", text: `+ Session restored (${restored.history.length} messages, model: ${restored.modelId}, saved: ${restored.updatedAt ?? "?"}).` },
       ];
-      for (const m of restored.history) out.push({ role: m.role === "user" ? "user" : "assistant", text: m.content });
+      for (const m of restored.history) out.push({ role: m.role === "user" ? "user" : "assistant", text: sanitizeCp437(m.content) });
       return out;
     }
     return [];
   });
   const historyRef = useRef<{ role: "user" | "assistant"; content: string }[]>(resumed && restored?.history?.length ? [...restored.history] : []);
-  const [cmdHistory, setCmdHistory] = useState<string[]>([]);
+  const [cmdHistory, setCmdHistory] = useState<string[]>(() => (resumed && restored?.cmdHistory) || []);
   const [histIdx, setHistIdx] = useState(-1);
   const draftRef = useRef("");
   const [busy, setBusy] = useState(false);
@@ -61,10 +61,10 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
   const pushSupplement = (t: string) => {
     supplementsRef.current.push(t);
     setSupplements([...supplementsRef.current]);
-    pushSystem(`⇪ Supplement queued — will be sent to the model at the next step boundary (${supplementsRef.current.length} waiting)`);
+    pushSystem(`^ Supplement queued - will be sent to the model at the next step boundary (${supplementsRef.current.length} waiting)`);
   };
 
-  /** quick commands: per-project slots 1-5, Ctrl+Q panel — digit OVERWRITES input with slot text; Ctrl+S saves current input */
+  /** quick commands: per-project slots 1-5, Ctrl+Q panel - digit OVERWRITES input with slot text; Ctrl+S saves current input */
   const [quick, setQuick] = useState<QuickMap>(() => loadQuick());
   const quickRef = useRef(quick);
   useEffect(() => { quickRef.current = quick; }, [quick]);
@@ -72,7 +72,9 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
   const [quickOpen, setQuickOpen] = useState(false);
   /** save mode armed by Ctrl+S (input non-empty): next digit 1-5 stores input */
   const [quickSave, setQuickSave] = useState(false);
-  const [tokenStats, setTokenStats] = useState<Record<string, { sent: number; recv: number }>>(() => (resumed && restored?.tokenStats) || {});
+  /** token stats: ref is the source of truth (persistSession from stale closures still writes current data) */
+  const tokenStatsRef = useRef<Record<string, { sent: number; recv: number }>>((resumed && restored?.tokenStats) || {});
+  const [tokenStats, setTokenStats] = useState<Record<string, { sent: number; recv: number }>>(() => tokenStatsRef.current);
   const [loc, setLoc] = useState<number | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [lastErr, setLastErr] = useState<string | null>(null);
@@ -84,15 +86,16 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
   useEffect(() => { sessionModelRef.current = modelId; }, [modelId]);
   const persistSession = () => {
     try {
-      saveSession({ modelId: sessionModelRef.current, startedAt: startedAtRef.current, history: historyRef.current, stepsUsed: restoredRef.current.stepsUsed, tokenStats }, process.cwd());
+      saveSession({ modelId: sessionModelRef.current, startedAt: startedAtRef.current, history: historyRef.current, stepsUsed: restoredRef.current.stepsUsed, tokenStats: tokenStatsRef.current, cmdHistory }, process.cwd());
     } catch {}
   };
 
-  const bumpTokens = (id: string, s: number, r: number) =>
-    setTokenStats((st) => {
-      const cur = st[id] ?? { sent: 0, recv: 0 };
-      return { ...st, [id]: { sent: cur.sent + s, recv: cur.recv + r } };
-    });
+  const bumpTokens = (id: string, s: number, r: number) => {
+    const cur = tokenStatsRef.current[id] ?? { sent: 0, recv: 0 };
+    tokenStatsRef.current = { ...tokenStatsRef.current, [id]: { sent: cur.sent + s, recv: cur.recv + r } };
+    setTokenStats(tokenStatsRef.current);
+    persistSession();
+  };
   const active = cfg.models.find((m) => m.id === modelId)!;
   const compactCfg = normalizeCompact(cfg.compact);
   const usedModels = Object.keys(tokenStats);
@@ -144,18 +147,18 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
       stdout.write("\x1b[?1049l\x1b[?25h");
       if (msgs.length) {
         try {
-          let out = "\n— tocoder transcript —\n";
+          let out = "\n- tocoder transcript -\n";
           for (const m of msgs) {
-            const tag = m.role === "user" ? "\x1b[34m› YOU:\x1b[0m" : m.role === "error" ? "\x1b[31m✗ ERR:\x1b[0m" : m.role === "system" ? "\x1b[33m◆ SYS:\x1b[0m" : "\x1b[36m● AI:\x1b[0m";
+            const tag = m.role === "user" ? "\x1b[34m› YOU:\x1b[0m" : m.role === "error" ? "\x1b[31mx ERR:\x1b[0m" : m.role === "system" ? "\x1b[33m* SYS:\x1b[0m" : "\x1b[36m• AI:\x1b[0m";
             const body = m.role === "assistant" ? renderMarkdown(m.text).join("\n") : m.text;
             out += `${tag} ${body}\n`;
           }
           out += "\n";
           writeSync(1, out);
         } catch {
-          stdout.write("\n— tocoder transcript —\n");
+          stdout.write("\n- tocoder transcript -\n");
           for (const m of msgs) {
-            const tag = m.role === "user" ? "› YOU:" : m.role === "error" ? "✗ ERR:" : m.role === "system" ? "◆ SYS:" : "● AI:";
+            const tag = m.role === "user" ? "› YOU:" : m.role === "error" ? "x ERR:" : m.role === "system" ? "* SYS:" : "• AI:";
             const body = m.role === "assistant" && !m.text.includes("\u0000") ? renderMarkdown(m.text).map(stripAnsi).join("\n") : m.text;
             stdout.write(`${tag} ${body}\n`);
           }
@@ -187,10 +190,10 @@ function Spinner({ label, showTime }: { label?: string; showTime?: boolean }) {
     const id = setInterval(() => { setFrame((f) => (f + 1) % frames.current.length); setMs(Date.now() - (startRef.current ?? Date.now())); }, 80);
     return () => { clearInterval(id); startRef.current = null; };
   }, []);
-  return <Text color="green" bold>{frames.current[frame % frames.current.length]} {label ?? "working…"}{showTime ? ` ${formatDuration(ms)}` : ""}</Text>;
+  return <Text color="green" bold>{frames.current[frame % frames.current.length]} {label ?? "working..."}{showTime ? ` ${formatDuration(ms)}` : ""}</Text>;
 }
 
-const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "◆ SYS:" : r === "error" ? "✗ ERR:" : "● AI:");
+const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "* SYS:" : r === "error" ? "x ERR:" : "• AI:");
 
   // flat line model: label line + wrapped text lines per message
   // assistant messages render as colored markdown; other roles plain
@@ -199,7 +202,7 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
     messages.forEach((m, i) => {
       if (m.role === "user" && arr.length) arr.push({ role: m.role, text: "", isLabel: false });
       arr.push({ role: m.role, text: roleLabel(m.role), isLabel: true });
-      const src = m.text || (busy && i === messages.length - 1 ? "…" : "");
+      const src = m.text || (busy && i === messages.length - 1 ? "..." : "");
       if (!src) { arr.push({ role: m.role, text: "", isLabel: false }); return; }
       // markdown → colored display lines (ANSI inside); wrap them visually (ANSI-safe)
       const srcLines = m.role === "assistant" && !m.text.includes("\u0000") ? renderMarkdown(src) : src.split("\n");
@@ -265,7 +268,7 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
     const thumbPos = Math.round((startIdx / Math.max(1, maxScroll)) * (viewportH - thumbSize));
     for (let r = 0; r < viewportH; r++) {
       const thumb = r >= thumbPos && r < thumbPos + thumbSize;
-      track.push({ ch: thumb ? "█" : "│", thumb });
+      track.push({ ch: thumb ? "#" : "|", thumb });
     }
     return track;
   }, [flatLines.length, viewportH, startIdx, maxScroll]);
@@ -321,10 +324,10 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
     return raw;
   };
 
-  const pushSystem = (text: string) => setMessages((m) => [...m, { role: "system", text }]);
+  const pushSystem = (text: string) => setMessages((m) => [...m, { role: "system", text: sanitizeCp437(text) }]);
   const pushError = (text: string) => {
-    setLastErr(text);
-    setMessages((m) => [...m, { role: "error", text }]);
+    setLastErr(sanitizeCp437(text));
+    setMessages((m) => [...m, { role: "error", text: sanitizeCp437(text) }]);
   };
 
   const runCompact = async (instruction?: string) => {
@@ -333,7 +336,7 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
     const cc = normalizeCompact(cfgRef.current.compact);
     const mc = cfgRef.current.models.find((m) => m.id === modelId);
     if (!mc) { pushError(`Model "${modelId}" not found`); return; }
-    pushSystem(`⏳ Compacting (${cc.mode}${instruction ? `, instruction: "${instruction}"` : ""})…`);
+    pushSystem(`.. Compacting (${cc.mode}${instruction ? `, instruction: "${instruction}"` : ""})...`);
     setBusy(true);
     try {
       const res = await compactHistory({
@@ -344,12 +347,12 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
         onUsage: (u) => bumpTokens(modelId, u.inputTokens, u.outputTokens),
       });
       historyRef.current = [
-        { role: "user" as const, content: `[CONTEXT SUMMARY after compact — ${res.removed} older messages removed. Honor this summary when continuing.]\n${res.summary}` },
+        { role: "user" as const, content: `[CONTEXT SUMMARY after compact - ${res.removed} older messages removed. Honor this summary when continuing.]\n${res.summary}` },
         { role: "assistant" as const, content: "Understood. Continuing with the summarized context." },
         ...res.kept,
       ];
       setCtxUsed(estimateHistoryTokens(historyRef.current));
-      pushSystem(`✓ Compact (${res.mode}): -${res.removed} messages, context ≈${estimateHistoryTokens(historyRef.current)} tok${res.instruction ? ", instruction applied" : ""}`);
+      pushSystem(`+ Compact (${res.mode}): -${res.removed} messages, context ~${estimateHistoryTokens(historyRef.current)} tok${res.instruction ? ", instruction applied" : ""}`);
       persistSession();
     } catch (e: any) {
       pushError(`Compact failed: ${e.message ?? String(e)}`);
@@ -362,13 +365,13 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
     c.models
       .map((m) => {
         const key = m.apiKeyEnv ? process.env[m.apiKeyEnv] ?? "" : "";
-        const hasKey = key ? maskKey(key) : "— no key";
-        const active = m.id === modelId ? "●" : "○";
+        const hasKey = key ? maskKey(key) : "- no key";
+        const active = m.id === modelId ? "*" : "o";
         const def = m.id === c.defaultModel ? " [default]" : "";
         const src = m.source === "local" ? " [local]" : " [global]";
         return `${active} ${m.id.padEnd(16)} ${m.provider.padEnd(10)} ${m.model}  key:${hasKey} ${m.baseURL ?? ""}${src}${def}`;
       })
-      .join("\n") + `\n\nGlobal: ${globalConfigPath()}\nLocal: ${localConfigPath() ?? "— none in project"} (local overrides global by model id)`;
+      .join("\n") + `\n\nGlobal: ${globalConfigPath()}\nLocal: ${localConfigPath() ?? "- none in project"} (local overrides global by model id)`;
 
   const handleCommand = async (raw: string): Promise<boolean> => {
     if (!raw.startsWith(":")) return false;
@@ -379,7 +382,7 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
     if (["allow", "permit"].includes(c)) {
       const p = args[0];
       const mode = (["read", "write", "execute"].includes(args[1]) ? args[1] : "write") as any;
-      if (!p) { const { listAllowed, getProjectRoot, rulesPath } = await import("../utils/permissions.js"); pushSystem(`Allowed outside: ${(listAllowed().join(", ") || "— none")}\nProject: ${getProjectRoot()}\nRules: ${rulesPath()}\nUsage: :allow <path> [read|write|execute]`); return true; }
+      if (!p) { const { listAllowed, getProjectRoot, rulesPath } = await import("../utils/permissions.js"); pushSystem(`Allowed outside: ${(listAllowed().join(", ") || "- none")}\nProject: ${getProjectRoot()}\nRules: ${rulesPath()}\nUsage: :allow <path> [read|write|execute]`); return true; }
       const { allowPath } = await import("../utils/permissions.js"); const abs = allowPath(p, mode); pushSystem(`Allowed (${mode}): ${abs}`); return true;
     }
     if (["deny", "forbid", "revoke"].includes(c)) {
@@ -392,14 +395,14 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
       const cc = normalizeCompact(cur.compact);
       const m = args[0]?.toLowerCase();
       if (!m) {
-        pushSystem(`Compact mode: ${cc.mode} | auto: ${cc.autoTrigger ? `${cc.thresholdPercent}%` + (cc.maxTokens > 0 ? `/max ${cc.maxTokens} tok` : "") : "off"}\n  reduce  — hard-trim history, 0 tokens, instant\n  balance — LLM summary + last 4 turns verbatim (default)\n  value   — structured extraction: GOAL/DECISIONS/FACTS/FILES/THREADS/STEPS + 8 turns\nChange: :compact-mode <reduce|balance|value>`);
+        pushSystem(`Compact mode: ${cc.mode} | auto: ${cc.autoTrigger ? `${cc.thresholdPercent}%` + (cc.maxTokens > 0 ? `/max ${cc.maxTokens} tok` : "") : "off"}\n  reduce  - hard-trim history, 0 tokens, instant\n  balance - LLM summary + last 4 turns verbatim (default)\n  value   - structured extraction: GOAL/DECISIONS/FACTS/FILES/THREADS/STEPS + 8 turns\nChange: :compact-mode <reduce|balance|value>`);
         return true;
       }
       const mapped = ({ redukcja: "reduce", balans: "balance", wartosc: "value" } as Record<string, string>)[m] ?? m;
       if (!COMPACT_MODES.includes(mapped as CompactMode)) { pushSystem(`Unknown mode "${m}". Available: ${COMPACT_MODES.join(", ")}`); return true; }
       cur.compact = { ...cc, mode: mapped as CompactMode };
       saveConfig(cur); reloadCfg();
-      pushSystem(`✓ Compact mode: ${mapped} (saved to ${localConfigPath() ?? globalConfigPath()})`);
+      pushSystem(`+ Compact mode: ${mapped} (saved to ${localConfigPath() ?? globalConfigPath()})`);
       return true;
     }
     if (c === "compact-auto" || c === "compactauto") {
@@ -411,7 +414,7 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
         const { limit, reason } = compactLimit(cc, ctx);
         const parts = [`${cc.thresholdPercent}% of ${ctx} = ${Math.round((ctx * cc.thresholdPercent) / 100)} tok`];
         if (cc.maxTokens > 0) parts.push(`max ${cc.maxTokens.toLocaleString("en-US")} tok (binding: ${reason})`);
-        pushSystem(`Auto-compact: ${cc.autoTrigger ? `ON — fires at whichever comes first:\n  ${parts.join("\n  ")}` : "OFF"}\nEffective limit: ${limit.toLocaleString("en-US")} tok\nChange: :compact-auto <on|off|percent 10-100|tokens <n>>`);
+        pushSystem(`Auto-compact: ${cc.autoTrigger ? `ON - fires at whichever comes first:\n  ${parts.join("\n  ")}` : "OFF"}\nEffective limit: ${limit.toLocaleString("en-US")} tok\nChange: :compact-auto <on|off|percent 10-100|tokens <n>>`);
         return true;
       }
       if (["on", "tak", "yes"].includes(a)) cur.compact = { ...cc, autoTrigger: true };
@@ -433,7 +436,7 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
       const nc = normalizeCompact(reloadCfg().compact);
       const ctx2 = active.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
       const lim = compactLimit(nc, ctx2);
-      pushSystem(`✓ Auto-compact: ${nc.autoTrigger ? `ON @ ${nc.thresholdPercent}%` + (nc.maxTokens > 0 ? ` / max ${nc.maxTokens.toLocaleString("en-US")} tok` : "") + ` → effective ${lim.limit.toLocaleString("en-US")} tok (${lim.reason})` : "OFF"} (saved to ${localConfigPath() ?? globalConfigPath()})`);
+      pushSystem(`+ Auto-compact: ${nc.autoTrigger ? `ON @ ${nc.thresholdPercent}%` + (nc.maxTokens > 0 ? ` / max ${nc.maxTokens.toLocaleString("en-US")} tok` : "") + ` → effective ${lim.limit.toLocaleString("en-US")} tok (${lim.reason})` : "OFF"} (saved to ${localConfigPath() ?? globalConfigPath()})`);
       return true;
     }
     if (["compact", "clear", "compress"].includes(c)) {
@@ -445,13 +448,13 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
       const cur = reloadCfg();
       if (args[0]?.toLowerCase() === "reset") {
         restoredRef.current.stepsUsed = 0; persistSession(); continueRef.current = false;
-        pushSystem(`✓ Step budget reset for this folder (0/${normalizeMaxSteps(cur.maxSteps)} used)`);
+        pushSystem(`+ Step budget reset for this folder (0/${normalizeMaxSteps(cur.maxSteps)} used)`);
         return true;
       }
       if (!args[0]) {
         const used = restoredRef.current.stepsUsed ?? 0;
         const lim = normalizeMaxSteps(cur.maxSteps);
-        pushSystem(`Step budget (per folder): ${used}/${lim === 0 ? "∞" : lim} used${lim === 0 ? " (unlimited)" : ""}\nBudget persists across sessions in this folder — :steps reset to refill.\nAfter hitting the limit, say "continue" — budget resets and the run resumes with a fresh budget.\nChange: :steps <n> (saved to ${localConfigPath() ?? globalConfigPath()})`);
+        pushSystem(`Step budget (per folder): ${used}/${lim === 0 ? "inf" : lim} used${lim === 0 ? " (unlimited)" : ""}\nBudget persists across sessions in this folder - :steps reset to refill.\nAfter hitting the limit, say "continue" - budget resets and the run resumes with a fresh budget.\nChange: :steps <n> (saved to ${localConfigPath() ?? globalConfigPath()})`);
         return true;
       }
       const n = parseInt(args[0], 10);
@@ -459,7 +462,7 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
       cur.maxSteps = n;
       saveConfig(cur); reloadCfg();
       continueRef.current = false;
-      pushSystem(`✓ Step limit: ${n === 0 ? "unlimited" : `${n} steps per run`} (saved to ${localConfigPath() ?? globalConfigPath()})`);
+      pushSystem(`+ Step limit: ${n === 0 ? "unlimited" : `${n} steps per run`} (saved to ${localConfigPath() ?? globalConfigPath()})`);
       return true;
     }
     if (c === "plan") {
@@ -469,13 +472,13 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
       cur.planMode = next;
       saveConfig(cur); reloadCfg();
       pushSystem(next
-        ? `✓ PLAN MODE on — read-only: no write/edit, bash restricted. Model proposes a plan; nothing is modified. (:plan off to exit)`
-        : `✓ PLAN MODE off — normal mode: tools may modify files.`);
+        ? `+ PLAN MODE on - read-only: no write/edit, bash restricted. Model proposes a plan; nothing is modified. (:plan off to exit)`
+        : `+ PLAN MODE off - normal mode: tools may modify files.`);
       return true;
     }
     if (["quick", "qcmd"].includes(c)) {
       if (!args[0]) {
-        pushSystem(`QUICK COMMANDS (per project — ${join(homedir(), ".config", "tokoder", "quick")})\n${formatQuick(quick)}\n\nInsert: Ctrl+Q → 1-5 (overwrites input — editable before Enter)\nSave:   type the command in input → Ctrl+S → 1-5 (overwrites slot)\nClear:  :quick clear <1-5>\nList:   :quick`);
+        pushSystem(`QUICK COMMANDS (per project - ${join(homedir(), ".config", "tokoder", "quick")})\n${formatQuick(quick)}\n\nInsert: Ctrl+Q → 1-5 (overwrites input - editable before Enter)\nSave:   type the command in input → Ctrl+S → 1-5 (overwrites slot)\nClear:  :quick clear <1-5>\nList:   :quick`);
         return true;
       }
       if (args[0] === "clear" || args[0] === "rm") {
@@ -483,15 +486,15 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
         if (!n || n < 1 || n > 5) { pushSystem("Usage: :quick clear <1-5>"); return true; }
         const next = setQuickSlot(quick, n, "");
         saveQuick(next); setQuick(next);
-        pushSystem(`✓ Quick [${n}] cleared.`);
+        pushSystem(`+ Quick [${n}] cleared.`);
         return true;
       }
       if (/^[1-5]$/.test(args[0])) {
         const text = args.slice(1).join(" ").trim();
-        if (!text) { pushSystem(`Quick [${args[0]}]: ${quick[args[0]] ? `"${quick[args[0]].text}"` : "— empty —"} (insert: Ctrl+Q → ${args[0]})`); return true; }
+        if (!text) { pushSystem(`Quick [${args[0]}]: ${quick[args[0]] ? `"${quick[args[0]].text}"` : "- empty -"} (insert: Ctrl+Q → ${args[0]})`); return true; }
         const next = setQuickSlot(quick, parseInt(args[0], 10), text);
         saveQuick(next); setQuick(next);
-        pushSystem(`✓ Quick [${args[0]}] = "${text.slice(0, 60)}${text.length > 60 ? "…" : ""}"`);
+        pushSystem(`+ Quick [${args[0]}] = "${text.slice(0, 60)}${text.length > 60 ? "..." : ""}"`);
         return true;
       }
       pushSystem("Usage: :quick | :quick <1-5> <text> | :quick clear <1-5>");
@@ -503,7 +506,8 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
         clearSession();
         historyRef.current = [];
         setCtxUsed(0);
-        setMessages([{ role: "system", text: "Session cleared — next start begins fresh." }]);
+        setCmdHistory([]);
+        setMessages([{ role: "system", text: "Session cleared - next start begins fresh." }]);
         return true;
       }
       pushSystem(`Session: ${sessionExists() ? "saved for this folder" : "none"}\nResume: tocoder -c (in this folder)\nReset: :session reset`);
@@ -512,14 +516,14 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
     if (["models", "model", "providers"].includes(c)) {
       const sub = args[0]?.toLowerCase();
       const cur = reloadCfg();
-      if (!sub) { pushSystem(`MODELS (${cur.models.length}):\n${formatModels(cur)}\n\n:models <id> — switch\n:models add <id> <provider> <model> [baseURL]\n:models rm <id>\n:models default <id>\n:models key <id> <API_KEY>\n:models test <id>\n:models set <id> <field> <value>\n:models save <global|local> — copy merged config\n\nproviders: anthropic | openai | openrouter | ollama | custom (any OpenAI-compatible API, e.g. https://api.cheaperinference.com/v1)`); return true; }
+      if (!sub) { pushSystem(`MODELS (${cur.models.length}):\n${formatModels(cur)}\n\n:models <id> - switch\n:models add <id> <provider> <model> [baseURL]\n:models rm <id>\n:models default <id>\n:models key <id> <API_KEY>\n:models test <id>\n:models set <id> <field> <value>\n:models save <global|local> - copy merged config\n\nproviders: anthropic | openai | openrouter | ollama | custom (any OpenAI-compatible API, e.g. https://api.cheaperinference.com/v1)`); return true; }
       if (sub === "test") {
         const id = args[1] ?? modelId;
         const m = cur.models.find((x) => x.id === id);
         if (!m) { pushSystem(`Not found: ${id}`); return true; }
-        pushSystem(`Testing ${id} (${m.baseURL ?? m.provider})…`);
+        pushSystem(`Testing ${id} (${m.baseURL ?? m.provider})...`);
         const res = await testConnection(m);
-        if (res.ok) pushSystem(`✓ ${id}: ${res.msg}`); else pushError(`✗ ${id}: ${res.msg}`);
+        if (res.ok) pushSystem(`+ ${id}: ${res.msg}`); else pushError(`x ${id}: ${res.msg}`);
         return true;
       }
       if (!["add", "rm", "remove", "del", "default", "key", "set", "test"].includes(sub) && cur.models.find((m) => m.id === sub)) {
@@ -528,9 +532,9 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
       }
       if (sub === "add") {
         const [id, provider, model, baseURL] = args.slice(1);
-        if (!id && !provider) { setWizard({ step: "kind" }); pushSystem("ADD MODEL — wizard. Pick kind:"); return true; }
-        if (!id || !provider || !model) { pushSystem("Usage: :models add <id> <provider> <model> [baseURL]  |  :models add — kreator interaktywny"); return true; }
-        if (!["anthropic", "openai", "openrouter", "ollama", "custom"].includes(provider)) { pushSystem(`Invalid provider "${provider}" — use: anthropic | openai | openrouter | ollama | custom (OpenAI-compatible, baseURL required)`); return true; }
+        if (!id && !provider) { setWizard({ step: "kind" }); pushSystem("ADD MODEL - wizard. Pick kind:"); return true; }
+        if (!id || !provider || !model) { pushSystem("Usage: :models add <id> <provider> <model> [baseURL]  |  :models add - kreator interaktywny"); return true; }
+        if (!["anthropic", "openai", "openrouter", "ollama", "custom"].includes(provider)) { pushSystem(`Invalid provider "${provider}" - use: anthropic | openai | openrouter | ollama | custom (OpenAI-compatible, baseURL required)`); return true; }
         if (cur.models.find((m) => m.id === id)) { pushSystem(`Model "${id}" already exists`); return true; }
         if (provider === "custom" && !baseURL) { pushSystem(`Provider "custom" requires baseURL: :models add <id> custom <model> <baseURL> [apiKeyEnv]`); return true; }
         const apiKeyEnv = provider === "anthropic" ? "ANTHROPIC_API_KEY" : provider === "openai" ? "OPENAI_API_KEY" : provider === "openrouter" ? "OPENROUTER_API_KEY" : provider === "custom" ? (args[5] ?? "CUSTOM_API_KEY") : undefined;
@@ -539,14 +543,14 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
       }
       if (["rm", "remove", "del"].includes(sub)) {
         const id = args[1];
-        if (!id) { setWizard({ step: "rm", rmId: undefined, models: cur.models.map((m) => m.id) }); pushSystem(`REMOVE MODEL — which id?\n${cur.models.map((m, i) => `${String(i + 1).padStart(2)}. ${m.id} (${m.provider}/${m.model})`).join("\n")}\n\nType a number or id.`); return true; }
+        if (!id) { setWizard({ step: "rm", rmId: undefined, models: cur.models.map((m) => m.id) }); pushSystem(`REMOVE MODEL - which id?\n${cur.models.map((m, i) => `${String(i + 1).padStart(2)}. ${m.id} (${m.provider}/${m.model})`).join("\n")}\n\nType a number or id.`); return true; }
         if (!cur.models.find((m) => m.id === id)) { pushSystem(`Not found: ${id}`); return true; }
         setWizard({ step: "rm", rmId: id });
         pushSystem(`Delete model "${id}"? [Y]es / [N]o`); return true;
       }
       if (sub === "default") {
         const id = args[1];
-        if (!id || !cur.models.find((m) => m.id === id)) { pushSystem(`Usage: :models default <id> — available: ${cur.models.map((m) => m.id).join(", ")}`); return true; }
+        if (!id || !cur.models.find((m) => m.id === id)) { pushSystem(`Usage: :models default <id> - available: ${cur.models.map((m) => m.id).join(", ")}`); return true; }
         cur.defaultModel = id; const savedTo = saveConfig(cur); reloadCfg(); pushSystem(`Default set to ${id} (saved to ${savedTo})`); return true;
       }
       if (sub === "key") {
@@ -556,13 +560,13 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
         if (!m) { pushSystem(`Not found: ${id}`); return true; }
         const envKey = m.apiKeyEnv ?? `${id.toUpperCase().replace(/-/g, "_")}_API_KEY`;
         if (!m.apiKeyEnv) { m.apiKeyEnv = envKey; saveConfig(cur); }
-        setEnvKey(envKey, key.trim()); reloadCfg();       pushSystem(`Key saved for ${id} → ${envKey} (${maskKey(key)}) in .tokoder/.env — run :models test ${id}`); return true;
+        setEnvKey(envKey, key.trim()); reloadCfg();       pushSystem(`Key saved for ${id} → ${envKey} (${maskKey(key)}) in .tokoder/.env - run :models test ${id}`); return true;
       }
       if (sub === "save") {
         const scope = args[1]?.toLowerCase() === "global" ? "global" : args[1]?.toLowerCase() === "local" ? "local" : undefined;
-        if (!scope) { pushSystem("Usage: :models save <global|local> — copies the current merged config"); return true; }
+        if (!scope) { pushSystem("Usage: :models save <global|local> - copies the current merged config"); return true; }
         const savedTo = saveConfig(reloadCfg(), process.cwd(), scope);
-        pushSystem(`✓ Config saved (${scope}): ${savedTo}`);
+        pushSystem(`+ Config saved (${scope}): ${savedTo}`);
         return true;
       }
       if (sub === "set") {
@@ -580,7 +584,7 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
     if (["acl", "access"].includes(c)) {
       const { loadRules, listAllowed, rulesPath } = await import("../utils/permissions.js");
       const r = loadRules();
-      pushSystem(`ACCESS RULES (outside project) — ${rulesPath()}\nGlobal: read=${r.read ? "YES" : "NO"}, write=${r.write ? "YES" : "NO"}, execute=${r.execute ? "YES" : "NO"}\n\nPer-path rules:\n${listAllowed().join("\n") || "— none —"}\n\nChange: :acl set <read|write|execute> <yes|no>\nAdd: :allow <path> [read|write|execute]  •  Remove: :deny <path>`);
+      pushSystem(`ACCESS RULES (outside project) - ${rulesPath()}\nGlobal: read=${r.read ? "YES" : "NO"}, write=${r.write ? "YES" : "NO"}, execute=${r.execute ? "YES" : "NO"}\n\nPer-path rules:\n${listAllowed().join("\n") || "- none -"}\n\nChange: :acl set <read|write|execute> <yes|no>\nAdd: :allow <path> [read|write|execute]  •  Remove: :deny <path>`);
       return true;
     }
     if (c === "aclset") {
@@ -590,7 +594,7 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
       const r = mod.loadRules();
       (r as any)[field] = ["tak", "yes"].includes(val.toLowerCase());
       mod.saveRules();
-      pushSystem(`✓ ${field} = ${(r as any)[field] ? "YES" : "NO"} (persisted across sessions)`);
+      pushSystem(`+ ${field} = ${(r as any)[field] ? "YES" : "NO"} (persisted across sessions)`);
       return true;
     }
     if (["agents", "instructions", "instr"].includes(c)) {
@@ -601,31 +605,31 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
       if (sub === "init") {
         const r = initInstructions();
         const tok = estimateTokens(readInstructions() ?? "");
-        pushSystem(r.created ? `✓ Created ${r.path} with default content (≈${tok} tok sent with every prompt)` : `${INSTRUCTIONS_FILE} already exists: ${r.path}\nEdit: :agents edit | :agents add <text> | :agents rm <n>`);
+        pushSystem(r.created ? `+ Created ${r.path} with default content (~${tok} tok sent with every prompt)` : `${INSTRUCTIONS_FILE} already exists: ${r.path}\nEdit: :agents edit | :agents add <text> | :agents rm <n>`);
         return true;
       }
       if (sub === "add") {
         const text = args.slice(1).join(" ").trim();
         if (!text) { pushSystem("Usage: :agents add <text>"); return true; }
         appendInstruction(text);
-        pushSystem(`✓ Appended to ${INSTRUCTIONS_FILE}: "${text}"`);
+        pushSystem(`+ Appended to ${INSTRUCTIONS_FILE}: "${text}"`);
         return true;
       }
       if (sub === "rm") {
         const n = parseInt(args[1] ?? "", 10);
         if (!n) { pushSystem("Usage: :agents rm <line-number> (numbers shown in :agents)"); return true; }
         const removed = removeInstructionLine(n);
-        pushSystem(removed === null ? `No line ${n} in ${INSTRUCTIONS_FILE}` : `✓ Removed line ${n}: ${removed.trim().slice(0, 80) || "(empty)"}`);
+        pushSystem(removed === null ? `No line ${n} in ${INSTRUCTIONS_FILE}` : `+ Removed line ${n}: ${removed.trim().slice(0, 80) || "(empty)"}`);
         return true;
       }
       if (sub === "edit") {
         if (readInstructions() === null) { pushSystem(`${INSTRUCTIONS_FILE} does not exist. Run :agents init first.`); return true; }
         const editor = process.env.EDITOR ?? "notepad";
-        pushSystem(`Opening ${p} in ${editor}… (applies from the next prompt)`);
+        pushSystem(`Opening ${p} in ${editor}... (applies from the next prompt)`);
         try {
           const { spawnSync } = await import("node:child_process");
           const r = spawnSync(editor, [p], { stdio: "inherit", shell: process.platform === "win32" });
-          pushSystem(r.status === 0 ? `✓ ${INSTRUCTIONS_FILE} saved — applies from the next prompt` : `${editor} exited with code ${r.status}`);
+          pushSystem(r.status === 0 ? `+ ${INSTRUCTIONS_FILE} saved - applies from the next prompt` : `${editor} exited with code ${r.status}`);
         } catch (e: any) {
           pushError(`Editor failed: ${e.message}. Set EDITOR env or edit ${p} manually.`);
         }
@@ -633,23 +637,23 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
       }
       const content = readInstructions();
       if (content === null) {
-        pushSystem(`${INSTRUCTIONS_FILE} not found in project (${p}).\nSent with EVERY prompt — saves output tokens, informs the model about tools.\nCreate: :agents init  •  Edit: :agents edit  •  Append: :agents add <text>  •  Remove: :agents rm <n>`);
+        pushSystem(`${INSTRUCTIONS_FILE} not found in project (${p}).\nSent with EVERY prompt - saves output tokens, informs the model about tools.\nCreate: :agents init  •  Edit: :agents edit  •  Append: :agents add <text>  •  Remove: :agents rm <n>`);
         return true;
       }
       const numbered = content.split("\n").map((l, i) => `${String(i + 1).padStart(3)}| ${l}`).join("\n");
-      pushSystem(`${INSTRUCTIONS_FILE} (${p}) — ≈${estimateTokens(content)} tok sent with every prompt:\n${numbered}\n\nEdit: :agents edit (EDITOR, default notepad)  •  Add: :agents add <text>  •  Remove: :agents rm <n>`);
+      pushSystem(`${INSTRUCTIONS_FILE} (${p}) - ~${estimateTokens(content)} tok sent with every prompt:\n${numbered}\n\nEdit: :agents edit (EDITOR, default notepad)  •  Add: :agents add <text>  •  Remove: :agents rm <n>`);
       return true;
     }
     if (c === "init") {
       const { initInstructions, readInstructions } = await import("../core/instructions.js");
       const r = initInstructions();
       const tok = estimateTokens(readInstructions() ?? "");
-      pushSystem(r.created ? `✓ Created ${r.path} with default content (≈${tok} tok sent with every prompt)` : `${r.path} already exists — see :agents`);
+      pushSystem(r.created ? `+ Created ${r.path} with default content (~${tok} tok sent with every prompt)` : `${r.path} already exists - see :agents`);
       return true;
     }
-    if (["help", "h", "?"].includes(c)) { pushSystem(`Commands:\n:exit / :q — exit\n:compact [instruction] — compact history (mode: :compact-mode)\n  examples: :compact keep the implementation plan\n             :compact focus on decisions and file paths\n             :compact keep open threads and next steps\n:compact-mode <reduce|balance|value> — compact strategy\n:compact-auto <on|off|percent|tokens <n>> — auto-trigger: % of context window OR absolute token limit, whichever comes first\n:steps <n> — agent step budget per run (0 = unlimited); "continue" after limit resets the budget
-:plan [on|off] — read-only plan mode: no file modifications, model proposes a plan instead
-:quick — quick commands (slots 1-5, per project): Ctrl+Q → digit overwrites input (editable); Ctrl+S (input non-empty) → digit saves it\n:agents — project instructions file (AGENTS.md), sent with every prompt\n  :agents init | edit | add <text> | rm <line>\n:init — create AGENTS.md with defaults\n:key — set Ollama Cloud API key\n:models — list | :models add/rm — wizards | :models test <id>\n  :models set <id> contextWindow <tok> — window for auto-compact\n:allow <path> / :deny <path> — sandbox\n:session — info | :session reset — clear saved session (tocoder -c resumes)\nEsc during work = abort run | Tool prompt: [Y]es [N]o [A]bort (Shift+A always) | ACL prompt: [P]File [F]Parent [N]o [A]bort\nPgUp/PgDn scroll`); return true; }
+    if (["help", "h", "?"].includes(c)) { pushSystem(`Commands:\n:exit / :q - exit\n:compact [instruction] - compact history (mode: :compact-mode)\n  examples: :compact keep the implementation plan\n             :compact focus on decisions and file paths\n             :compact keep open threads and next steps\n:compact-mode <reduce|balance|value> - compact strategy\n:compact-auto <on|off|percent|tokens <n>> - auto-trigger: % of context window OR absolute token limit, whichever comes first\n:steps <n> - agent step budget per run (0 = unlimited); "continue" after limit resets the budget
+:plan [on|off] - read-only plan mode: no file modifications, model proposes a plan instead
+:quick - quick commands (slots 1-5, per project): Ctrl+Q → digit overwrites input (editable); Ctrl+S (input non-empty) → digit saves it\n:agents - project instructions file (AGENTS.md), sent with every prompt\n  :agents init | edit | add <text> | rm <line>\n:init - create AGENTS.md with defaults\n:key - set Ollama Cloud API key\n:models - list | :models add/rm - wizards | :models test <id>\n  :models set <id> contextWindow <tok> - window for auto-compact\n:allow <path> / :deny <path> - sandbox\n:session - info | :session reset - clear saved session (tocoder -c resumes)\nEsc during work = abort run | Tool prompt: [Y]es [N]o [A]bort (Shift+A always) | ACL prompt: [P]File [F]Parent [N]o [A]bort\nPgUp/PgDn scroll`); return true; }
     pushSystem(`Unknown command ":${c}". Try :help`); return true;
   };
 
@@ -662,13 +666,13 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
   };
 
   const wizardPrompt = (w: NonNullable<typeof wizard>): string => {
-    if (w.step === "kind") return "ADD MODEL — 1: local Ollama (localhost:11434), 2: Ollama Cloud (ollama.com)";
+    if (w.step === "kind") return "ADD MODEL - 1: local Ollama (localhost:11434), 2: Ollama Cloud (ollama.com)";
     if (w.step === "key") {
       const has = process.env.OLLAMA_API_KEY;
-      return `API KEY for Ollama Cloud${has ? ` (have ${maskKey(has)} — type a new one to replace, Enter = keep)` : " (paste key from ollama.com/settings/keys)"}`;
+      return `API KEY for Ollama Cloud${has ? ` (have ${maskKey(has)} - type a new one to replace, Enter = keep)` : " (paste key from ollama.com/settings/keys)"}`;
     }
-    if (w.step === "model") return `Pick a model — number from the list or type the name (${w.models?.length ?? 0} found, "n" = custom name)`;
-    if (w.step === "rm") return w.rmId === undefined ? "Type a number or model id to remove" : `Confirm removal of "${w.rmId}" — y/n`;
+    if (w.step === "model") return `Pick a model - number from the list or type the name (${w.models?.length ?? 0} found, "n" = custom name)`;
+    if (w.step === "rm") return w.rmId === undefined ? "Type a number or model id to remove" : `Confirm removal of "${w.rmId}" - y/n`;
     return `ID for ${w.model} (Enter = "${w.suggestedId}")`;
   };
 
@@ -684,7 +688,7 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
       try {
         const models = (await listOllamaModels(kind)).map((m) => m.name);
         setWizard({ step: "model", kind, models });
-        pushSystem(`Ollama ${kind === "local" ? "local" : "cloud"} — available models:\n${models.map((m, i) => `${String(i + 1).padStart(2)}. ${m}`).join("\n")}\n\nType a number, model name, or "n" (custom).`);
+        pushSystem(`Ollama ${kind === "local" ? "local" : "cloud"} - available models:\n${models.map((m, i) => `${String(i + 1).padStart(2)}. ${m}`).join("\n")}\n\nType a number, model name, or "n" (custom).`);
       } catch (e: any) {
         setWizard(null);
         pushError(`Failed to fetch list (${kind === "local" ? "is `ollama serve` running?" : e.message})`);
@@ -695,7 +699,7 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
       if (!v || v.startsWith(":")) { pushSystem("Provide a key (cancel: :q)."); return; }
       setEnvKey("OLLAMA_API_KEY", v);
       setWizard(null);
-      pushSystem(`✓ Key saved to .env → OLLAMA_API_KEY (${maskKey(v)}). Now :models add → 2 (Ollama Cloud).`);
+      pushSystem(`+ Key saved to .env → OLLAMA_API_KEY (${maskKey(v)}). Now :models add → 2 (Ollama Cloud).`);
       return;
     }
     if (w.step === "model") {
@@ -728,13 +732,13 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
       const savedTo = saveConfig(cur); reloadCfg();
       if (modelId === removed.id) setModelId(cur.defaultModel);
       setWizard(null);
-      pushSystem(`✓ Removed ${removed.id} (${removed.provider}/${removed.model}) (saved to ${savedTo})${cur.defaultModel ? `\nDefault: ${cur.defaultModel}` : "\n⚠ No models left in config!"}`);
+      pushSystem(`+ Removed ${removed.id} (${removed.provider}/${removed.model}) (saved to ${savedTo})${cur.defaultModel ? `\nDefault: ${cur.defaultModel}` : "\n! No models left in config!"}`);
       return;
     }
     if (w.step === "id") {
       const id = v || w.suggestedId || ollamaIdSuggestion(w.model ?? "");
       const cur = reloadCfg();
-      if (cur.models.find((m) => m.id === id)) { pushSystem(`ID "${id}" already exists — choose another.`); return; }
+      if (cur.models.find((m) => m.id === id)) { pushSystem(`ID "${id}" already exists - choose another.`); return; }
       const isCloud = w.kind === "cloud";
       cur.models.push({
         id,
@@ -745,7 +749,7 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
       const savedTo = saveConfig(cur); reloadCfg();
       setWizard(null);
       pushSystem(
-        `✓ Added ${id} → ${w.model} (saved to ${savedTo})${isCloud ? " (Ollama Cloud, https://ollama.com/v1)" : " (local)"}\n${isCloud && !process.env.OLLAMA_API_KEY ? `⚠ Set the key: :models key ${id} <OLLAMA_API_KEY> (from ollama.com/settings/keys)\n` : ""}Now: :models test ${id}${isCloud ? "" : "\nIf the model is not pulled yet: ollama pull " + w.model}`
+        `+ Added ${id} → ${w.model} (saved to ${savedTo})${isCloud ? " (Ollama Cloud, https://ollama.com/v1)" : " (local)"}\n${isCloud && !process.env.OLLAMA_API_KEY ? `! Set the key: :models key ${id} <OLLAMA_API_KEY> (from ollama.com/settings/keys)\n` : ""}Now: :models test ${id}${isCloud ? "" : "\nIf the model is not pulled yet: ollama pull " + w.model}`
       );
       return;
     }
@@ -782,21 +786,21 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
       const next = setQuickSlot(quickRef.current, parseInt(char, 10), text);
       saveQuick(next); setQuick(next);
       setQuickSave(false);
-      pushSystem(`✓ Quick [${char}] = "${text.slice(0, 60)}${text.length > 60 ? "…" : ""}"`);
+      pushSystem(`+ Quick [${char}] = "${text.slice(0, 60)}${text.length > 60 ? "..." : ""}"`);
       return;
     }
     if (quickSave && (key.escape || key.return)) { setQuickSave(false); return; }
     if (quickOpen && /^[1-5]$/.test(char ?? "") && !wizard && !pendingTool && !pendingAccess) {
       const s = quickRef.current[char];
       setQuickOpen(false);
-      if (!s) { pushSystem(`Quick [${char}] is empty — type the command, Ctrl+S, then ${char} to save it.`); return; }
+      if (!s) { pushSystem(`Quick [${char}] is empty - type the command, Ctrl+S, then ${char} to save it.`); return; }
       setInput(s.text);
-      pushSystem(`⌁ Quick [${char}] overwrote input — edit if needed, Enter sends.`);
+      pushSystem(`~ Quick [${char}] overwrote input - edit if needed, Enter sends.`);
       return;
     }
     if (quickOpen && (key.escape || key.return)) { setQuickOpen(false); return; }
-    if (key.escape && busy && abortRef.current && !accessRef.current && !approvalRef.current) { abortRef.current.abort(); pushSystem("⛔ Aborting…"); return; }
-    if (key.escape) { setWizard(null); setHistIdx(-1); pushSystem("Cancelled (Esc — exit only via :exit)."); return; }
+    if (key.escape && busy && abortRef.current && !accessRef.current && !approvalRef.current) { abortRef.current.abort(); pushSystem("STOP Aborting..."); return; }
+    if (key.escape) { setWizard(null); setHistIdx(-1); pushSystem("Cancelled (Esc - exit only via :exit)."); return; }
     if (key.ctrl && char === "c") exit();
     if (key.tab) {
       const sug = getSuggestion(input);
@@ -828,7 +832,7 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
         effectivePrompt = opt ? `My choice is option ${n}: "${opt[1].trim()}". Continue.` : `My choice is option ${n} from your last list. Continue.`;
         logEntry("USER-CHOICE", modelId, JSON.stringify({ raw: prompt, expanded: effectivePrompt, quotedFrom: opt?.[1]?.trim() ?? null }, null, 2));
       }
-      setMessages((m) => [...m, { role: "user", text: prompt }]);
+      setMessages((m) => [...m, { role: "user", text: sanitizeCp437(prompt) }]);
       setBusy(true); setLastErr(null);
       const isContinue = /^\s*(continue|kontynuuj|dalej|cd)\s*$/i.test(prompt);
       const useContinue = isContinue && continueRef.current;
@@ -876,22 +880,22 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
           onAccessRequest: async (tool, _args, mode, target) => {
             return await new Promise<AccessDecision>((resolve) => { accessRef.current = resolve; setPendingAccess({ tool, mode, target }); });
           },
-          onToolCall: (n, a) => { const line = `→ ${n} ${JSON.stringify(a).slice(0, 120)}`; toolLog.push(line); pushSystem(line); }, onToolResult: (n, r) => { pushSystem(`← ${n}: ${r.slice(0, 120)}`); },
+          onToolCall: (n, a) => { const line = `-> ${n} ${JSON.stringify(a).slice(0, 120)}`; toolLog.push(line); pushSystem(line); }, onToolResult: (n, r) => { pushSystem(`<- ${n}: ${r.slice(0, 120)}`); },
           onContext: (tok) => { setCtxUsed(tok); },
           supplementQueue: supplementsRef.current,
-          onSupplement: (content) => { pushSystem(`⇪ Supplement delivered: "${content.replace("[user supplement while working] ", "").slice(0, 80)}${content.length > 88 ? "…" : ""}"`); },
+          onSupplement: (content) => { pushSystem(`^ Supplement delivered: "${content.replace("[user supplement while working] ", "").slice(0, 80)}${content.length > 88 ? "..." : ""}"`); },
         }, (u) => {
           if (u.inputTokens > 0) { usageSent = true; bumpTokens(modelId, u.inputTokens, 0); }
           if (u.outputTokens > 0) { usageRecv = true; bumpTokens(modelId, 0, u.outputTokens); }
         })) {
-          acc += chunk;
+          acc += sanitizeCp437(chunk);
           setMessages((m) => {
-            const copy = [...m]; copy[copy.length - 1] = { role: "assistant", text: acc || (toolLog.length ? `[working… ${toolLog[toolLog.length - 1]}]` : "…") }; return copy;
+            const copy = [...m]; copy[copy.length - 1] = { role: "assistant", text: acc || (toolLog.length ? `[working... ${toolLog[toolLog.length - 1]}]` : "...") }; return copy;
           });
         }
         if (!acc.trim()) {
-          if (toolLog.length) { acc = `[done — tools: ${toolLog.join(", ")}]`; setMessages((m) => { const c=[...m]; c[c.length-1]={role:"assistant", text:acc}; return c; }); }
-          else pushError(`[${modelId}] empty — :models test ${modelId}`);
+          if (toolLog.length) { acc = `[done - tools: ${toolLog.join(", ")}]`; setMessages((m) => { const c=[...m]; c[c.length-1]={role:"assistant", text:acc}; return c; }); }
+          else pushError(`[${modelId}] empty - :models test ${modelId}`);
         }
         if (!usageSent) bumpTokens(modelId, estimateTokens(prompt), 0);
         if (!usageRecv && acc.trim()) bumpTokens(modelId, 0, estimateTokens(acc));
@@ -906,21 +910,24 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
           const { limit, reason } = compactLimit(cc, ctx);
           if (used > limit) {
             const why = reason === "tokens" ? `max ${cc.maxTokens.toLocaleString("en-US")} tok` : `${cc.thresholdPercent}% of ${ctx} = ${Math.round((ctx * cc.thresholdPercent) / 100)} tok`;
-            pushSystem(`⚙ Auto-compact: ${used} tok > ${limit} tok (${why})`);
+            pushSystem(`* Auto-compact: ${used} tok > ${limit} tok (${why})`);
             await runCompact();
           }
         }
-      } catch (e: any) {
-        if (e?.code === "ABORTED") pushSystem(`⛔ ${e.message}`);
-        else pushError(e.message ?? String(e));
-        setMessages((m) => {
-          const copy = [...m];
-          if (copy[copy.length - 1]?.role === "assistant" && !copy[copy.length - 1].text) copy.pop();
-          return copy;
-        });
-      } finally {
+        } catch (e: any) {
+          if (e?.code === "ABORTED") pushSystem(`STOP ${e.message}`);
+          else pushError(e.message ?? String(e));
+          /** aborted mid-stream: no usage event arrives → estimate sent/recv so counters stay honest */
+          if (!usageSent) bumpTokens(modelId, estimateTokens(prompt), 0);
+          if (!usageRecv && acc.trim()) bumpTokens(modelId, 0, estimateTokens(acc));
+          setMessages((m) => {
+            const copy = [...m];
+            if (copy[copy.length - 1]?.role === "assistant" && !copy[copy.length - 1].text) copy.pop();
+            return copy;
+          });
+        } finally {
         abortRef.current = null; countLOC().then(setLoc); setBusy(false); setScroll(0);
-        if (supplementsRef.current.length) pushSystem(`⚠ ${supplementsRef.current.length} supplement(s) not delivered (run ended) — resend or press ↑ to recover:\n${supplementsRef.current.map((s, i) => `  ${i + 1}. ${s}`).join("\n")}`);
+        if (supplementsRef.current.length) pushSystem(`! ${supplementsRef.current.length} supplement(s) not delivered (run ended) - resend or press ↑ to recover:\n${supplementsRef.current.map((s, i) => `  ${i + 1}. ${s}`).join("\n")}`);
         supplementsRef.current = []; setSupplements([]);
       }
     } else if (key.backspace || key.delete) { setInput((s) => s.slice(0, -1)); }
@@ -947,37 +954,36 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
           <Text> </Text>
           <Text bold color="yellow" wrap="wrap">{process.cwd()}</Text>
         </Box>
-        <Box gap={1} flexWrap="wrap">
+        <Box columnGap={1} flexWrap="wrap">
           {cfg.models.map((m) => {
             const t = tokenStats[m.id] ?? { sent: 0, recv: 0 };
             const fmt = (n: number) => (n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n));
-            return <Text key={m.id} color={m.id === modelId ? "green" : "gray"} bold={m.id === modelId}>{m.id === modelId ? "●" : "○"} {m.id} ({fmt(t.sent)}↑/{fmt(t.recv)}↓)</Text>;
+            return <Text key={m.id} color={m.id === modelId ? "green" : "gray"} bold={m.id === modelId}>{m.id === modelId ? "*" : "o"} {m.id} ({fmt(t.sent)}↑/{fmt(t.recv)}↓)</Text>;
           })}
         </Box>
       </Box>
 
       <Box flexShrink={0} borderStyle="round" borderColor={lastErr ? "red" : "yellow"} marginTop={1} paddingX={1} flexDirection="column">
-        <Text bold color={lastErr ? "red" : "yellow"}>● STATUS {lastErr ? "— ERROR" : ""}</Text>
+        <Text bold color={lastErr ? "red" : "yellow"}>* STATUS {lastErr ? "- ERROR" : ""}</Text>
         <Box flexWrap="wrap" flexDirection="row" columnGap={2}>
           <Text><Text color="cyan">Model: </Text><Text bold>{active.id}</Text><Text dimColor> ({active.provider}/{active.model})</Text></Text>
-          <Text><Text color="green">↑ {curTok.sent.toLocaleString("en-US")}</Text><Text dimColor> sent</Text><Text> </Text><Text color="magenta">↓ {curTok.recv.toLocaleString("en-US")}</Text><Text dimColor> recv</Text></Text>
           {busy && <Spinner showTime />}
-          {usedModels.length > 1 && <Text dimColor>(∑ {usedModels.length} models: ↑{totTok.sent.toLocaleString("en-US")} ↓{totTok.recv.toLocaleString("en-US")})</Text>}
         </Box>
+        <Text><Text color="cyan">Tokens: </Text><Text color="green">↑{totTok.sent.toLocaleString("en-US")} sent</Text><Text color="yellow"> ↓{totTok.recv.toLocaleString("en-US")} recv</Text></Text>
         <Box flexWrap="wrap" flexDirection="row" columnGap={2}>
-          <Text><Text color="cyan">LOC: </Text><Text>{loc === null ? "…" : loc.toLocaleString("en-US")}</Text></Text>
+          <Text><Text color="cyan">LOC: </Text><Text>{loc === null ? "..." : loc.toLocaleString("en-US")}</Text></Text>
           <Text><Text color="cyan">Time: </Text><Text>{formatDuration(elapsed)}</Text></Text>
-          <Text><Text color="cyan">Env: </Text>{envs.map((e, i) => <Text key={e.label} color={e.ok ? "green" : "gray"}>{i ? " " : ""}{e.ok ? "✓" : "✗"}{e.label}</Text>)}</Text>
+          <Text><Text color="cyan">Env: </Text>{envs.map((e, i) => <Text key={e.label} color={e.ok ? "green" : "gray"}>{i ? " " : ""}{e.ok ? "+" : "-"}{e.label}</Text>)}</Text>
           <Text><Text color="cyan">Compact: </Text><Text bold>{compactCfg.mode}</Text>{compactCfg.autoTrigger ? <Text dimColor>{compactCfg.maxTokens > 0 ? ` (auto ${compactCfg.thresholdPercent}%/max ${compactCfg.maxTokens >= 1000 ? Math.round(compactCfg.maxTokens / 1000) + "k" : compactCfg.maxTokens})` : ` (auto ${compactCfg.thresholdPercent}%)`}</Text> : <Text dimColor> (auto off)</Text>}</Text>
         </Box>
-        {lastErr && <Text color="red" wrap="wrap">✗ {lastErr}</Text>}
+        {lastErr && <Text color="red" wrap="wrap">x {lastErr}</Text>}
       </Box>
 
       <Box flexGrow={1} flexShrink={1} flexDirection="column" overflow="hidden" borderStyle="round" borderColor="green" marginTop={1} paddingX={1} height={outputH}>
-        <Box flexShrink={0}><Text bold color="green">{busy ? <Spinner label="MODEL RESPONSE" /> : "● MODEL RESPONSE"}</Text><Text dimColor>{moreAbove ? " ↑more" : ""}{moreBelow ? " ↓end" : ""} {flatLines.length > viewportH ? `[${startIdx + 1}-${startIdx + visibleLines.length}/${flatLines.length} lines]` : ""}</Text></Box>
+        <Box flexShrink={0}><Text bold color="green">{busy ? <Spinner label="MODEL RESPONSE" /> : "* MODEL RESPONSE"}</Text><Text dimColor>{moreAbove ? " ^more" : ""}{moreBelow ? " vend" : ""} {flatLines.length > viewportH ? `[${startIdx + 1}-${startIdx + visibleLines.length}/${flatLines.length} lines]` : ""}</Text></Box>
         <Box flexDirection="row">
           <Box flexDirection="column" width={innerW - 1} flexShrink={0}>
-            {visibleLines.length === 0 && messages.length === 0 && !busy && <Text dimColor> No messages — :help</Text>}
+            {visibleLines.length === 0 && messages.length === 0 && !busy && <Text dimColor> No messages - :help</Text>}
             {visibleLines.map((ln, i) => (
               <Text key={i} color={ln.role === "user" ? "blue" : ln.role === "system" ? "yellow" : ln.role === "error" ? "red" : ln.isLabel ? "white" : undefined} bold={ln.isLabel} wrap="truncate">{ln.text}</Text>
             ))}
@@ -995,47 +1001,47 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
       <Box flexShrink={0} borderStyle="round" borderColor={isCmd ? "yellow" : lastErr ? "red" : "magenta"} marginTop={1} paddingX={1} flexDirection="column">
         <Box flexDirection="row" justifyContent="space-between" width={innerW}>
           <Box flexDirection="row" flexWrap="wrap">
-            <Text color={wizard ? "cyan" : isCmd ? "yellow" : "magenta"} bold>{wizard ? "⚙" : isCmd ? ":" : "›"} </Text>
+            <Text color={wizard ? "cyan" : isCmd ? "yellow" : "magenta"} bold>{wizard ? "!" : isCmd ? ":" : "›"} </Text>
             <Text color={wizard ? "cyan" : busy ? "gray" : isCmd ? "yellow" : "yellow"} wrap="wrap">{wizard ? wizardPrompt(wizard) : busy ? (pendingTool ? "" : input) : isCmd ? input.slice(1) : input}{suggestion && !busy && !wizard ? <Text dimColor>{suggestion}</Text> : null}</Text>
             {!wizard && <Text backgroundColor={busy ? "green" : undefined} color={isCmd ? "black" : "white"}> </Text>}
           </Box>
           <Text dimColor>{ctxUsed.toLocaleString("en-US")}/{ctxLabel} tok ({ctxPct}%){cfg.planMode ? <Text color="yellow" bold> · PLAN</Text> : null}</Text>
         </Box>
-        {wizard && <Text dimColor wrap="wrap">→ {input || "(type answer)"} ▌   (:q aborts)</Text>}
+        {wizard && <Text dimColor wrap="wrap">→ {input || "(type answer)"} |   (:q aborts)</Text>}
         {quickSave && (
           <Box flexDirection="column" marginTop={1}>
-            <Text bold color="cyan">SAVE TO SLOT — press 1-5 to store current input · Esc = cancel</Text>
+            <Text bold color="cyan">SAVE TO SLOT - press 1-5 to store current input · Esc = cancel</Text>
             {formatQuick(quick).split("\n").map((ln) => <Text key={ln} color="cyan">{ln}</Text>)}
           </Box>
         )}
         {quickOpen && !quickSave && (
           <Box flexDirection="column" marginTop={1}>
-            <Text bold color="green">QUICK — 1-5 overwrites input (editable) · Esc/Ctrl+Q = close · Ctrl+S = save current input</Text>
+            <Text bold color="green">QUICK - 1-5 overwrites input (editable) · Esc/Ctrl+Q = close · Ctrl+S = save current input</Text>
             {formatQuick(quick).split("\n").map((ln) => <Text key={ln} color="green">{ln}</Text>)}
           </Box>
         )}
         {supplements.length > 0 && (
           <Box flexDirection="column" marginTop={1}>
-            <Text bold color="green">⇪ QUEUED SUPPLEMENTS ({supplements.length}) — delivered at next step boundary</Text>
+            <Text bold color="green">^ QUEUED SUPPLEMENTS ({supplements.length}) - delivered at next step boundary</Text>
             {supplements.map((s, i) => <Text key={i} color="green" wrap="truncate">  {i + 1}. {s.slice(0, innerW - 8)}</Text>)}
           </Box>
         )}
         {pendingAccess && (
           <Box flexDirection="column">
-            <Text color="red" bold>🔒 ACCESS OUTSIDE PROJECT ({pendingAccess.mode})</Text>
+            <Text color="red" bold>[ACL] ACCESS OUTSIDE PROJECT ({pendingAccess.mode})</Text>
             <Text wrap="truncate">{pendingAccess.target}</Text>
             <Text bold color="yellow">[P]File  [F]Parent folder  [N]o  [A]bort run</Text>
           </Box>
         )}
         {pendingTool && !pendingAccess && (
           <Box flexDirection="column">
-            <Text color="cyan" bold>⚡ Tool: {pendingTool.name}</Text>
+            <Text color="cyan" bold>{"->"} Tool: {pendingTool.name}</Text>
             <Text dimColor wrap="truncate">{JSON.stringify(pendingTool.args).slice(0, innerW - 2)}</Text>
             <Text bold color="yellow">[Y]es  [N]o  [A]bort run  (Shift+A = always allow {pendingTool.name})</Text>
           </Box>
         )}
-        {suggestion && !busy && <Box><Text dimColor>↹Tab → :{input.slice(1) + suggestion}  ↵Enter executes</Text></Box>}
-        {input.length > innerW && <Box><Text dimColor>↔ {input.length}/{innerW} chars — wraps</Text></Box>}
+        {suggestion && !busy && <Box><Text dimColor>{`Tab -> `}{":" + input.slice(1) + suggestion}{"  Enter executes"}</Text></Box>}
+        {input.length > innerW && <Box><Text dimColor>{`<->`} {input.length}/{innerW} chars - wraps</Text></Box>}
       </Box>
       <Box flexShrink={0}><Text dimColor wrap="wrap">↑↓ history {histIdx >= 0 ? `(${histIdx + 1}/${cmdHistory.length})` : ""} (editable) | PgUp/PgDn scroll | Ctrl+Q quick · Ctrl+S save | Enter while busy = queue supplement | :models test {modelId} | {visibleLines.length}/{flatLines.length} lines{suggestion ? ` | :${input.slice(1) + suggestion}` : ""}</Text></Box>
     </Box>

@@ -14,7 +14,7 @@ function defaultRules(): object {
 
 function defaultEnvTemplate(): string {
   return `# tokoder project-local env (auto-created)
-# Add API keys for :models key <id> — or manage keys globally in ~/.config/tokoder/.env
+# Add API keys for :models key <id> - or manage keys globally in ~/.config/tokoder/.env
 `;
 }
 

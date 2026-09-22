@@ -65,7 +65,7 @@ export function getModelFromConfig(cfg: ModelConfig): LanguageModel {
       return client(cfg.model);
     }
     case "custom": {
-      if (!cfg.baseURL) throw new Error(`Model "${cfg.id}" (provider "custom") requires baseURL — fix tokoder.config.json`);
+      if (!cfg.baseURL) throw new Error(`Model "${cfg.id}" (provider "custom") requires baseURL - fix tokoder.config.json`);
       const key = requireCustomKey(cfg);
       const client = createOpenAICompatible({
         name: cfg.id,
