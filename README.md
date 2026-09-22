@@ -156,6 +156,8 @@ TOCODER_DEBUG=1 tocoder          # per-step finishReason diagnostics
 # PgUp/PgDn        scroll output (auto-scroll pauses; PgDn returns to bottom)
 # ↑/↓              previous prompts & commands — editable (Backspace works)
 # Y / N / A        approve / deny / abort pending tool call (Shift+A = always)
+# Ctrl+V           paste image from clipboard -> PNG in .tokoder/tmp/ + path chip in input
+#                  (model reads it via the read tool; vision models could use the file directly)
 # P / F / N / A    grant access outside project: file / parent dir / deny / abort
 # Enter            send (prefix :comp → :compact auto-completes)
 # Esc              cancel wizard / prompt (exit only via :exit or Ctrl+C)
@@ -196,6 +198,7 @@ scripts/tocoder.bat "prompt"
 | `:deny <path>` | revoke |
 | `:session` | session info (saved file, resume hint) |
 | `:session reset` | clear saved session for this folder |
+| **Ctrl+V** | **paste clipboard image** — saves PNG to `.tokoder/tmp/clipboard-*.png` and inserts `[image: <path> WxH]` chip into the input; the model can read the file with the `read` tool (metadata: dimensions, size) |
 | `:help` | help |
 
 Typing `:` shows ghost hint when prefix is unambiguous — `Enter` executes, `Tab` completes (e.g. `:comp` → `:compact`).
@@ -317,7 +320,7 @@ src/
     providers.ts      # getModelFromConfig
     session.ts        # per-project session persistence (.tokoder/sessions/)
     quick.ts          # quick commands slots 1-5 (.tokoder/quick.json)
-  tools/              # read / write / edit / bash / glob / grep (ACL-guarded); agentTools (schemas) + executors; bash screenCommand mode-classifies commands (read vs write rules)
+  tools/              # read / write / edit / bash / glob / grep (ACL-guarded); agentTools (schemas) + executors; bash screenCommand mode-classifies commands (read vs write rules); image-size.ts sniffs PNG/JPEG/GIF/WEBP/BMP dimensions; read returns image metadata instead of binary garbage
   tui/App.tsx         # Ink 3-panel, vim, autocomplete, editable history, auto-scroll + scrollbar, tool approval + ACL prompt (abort), per-model token stats (persisted, summed in STATUS), :models add/rm wizards, auto-compact, markdown output, live supplements, isolated anti-flicker spinner
   utils/
     paths.ts          # appDir/appFile (.tokoder/) + globalAppDir (~/.config/tokoder)
@@ -329,6 +332,7 @@ src/
     permissions.ts    # checkAccess (ACL modes), per-project rules (seeded from global), accessRequest marker, guard(mode), allow/deny
 scripts/
   install.mjs         # installer: build + npm link + global settings (~/.config/tokoder)
+  paste-image.ps1     # clipboard image -> PNG (Ctrl+V in TUI; copied to dist/scripts on build)
   tocoder.ps1 / .sh / .bat (and tokoder aliases)
 tokoder.config.json
 ```

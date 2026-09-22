@@ -3,8 +3,10 @@ import { Box, Text, useInput, useApp, useStdout } from "ink";
 import { createRequire } from "node:module";
 import { writeSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 const require = createRequire(import.meta.url);
+/** dist/scripts/ — paste-image.ps1 lives next to compiled output */
+const distScriptsPath = () => resolve(new URL("..", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"), "scripts");
 import { runAgent, testConnection, type ToolDecision, type AccessDecision } from "../core/agent.js";
 import { loadConfig, saveConfig, normalizeCompact, compactLimit, normalizeMaxSteps, globalConfigPath, localConfigPath, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_STEPS } from "../core/config.js";
 import { compactHistory, estimateHistoryTokens, COMPACT_MODES, type CompactMode } from "../core/compact.js";
@@ -70,6 +72,29 @@ export function App({ initialPrompt, initialModel, resumed }: { initialPrompt?: 
   useEffect(() => { quickRef.current = quick; }, [quick]);
   /** quick panel open (Ctrl+Q): digits 1-5 insert/overwrite input */
   const [quickOpen, setQuickOpen] = useState(false);
+  const [pasteBusy, setPasteBusy] = useState(false);
+  /** persistent clipboard watcher: spawned ONCE at startup (before Ink renders) so its console init
+   *  can't clobber the TUI's VT state; Ctrl+V writes a path to its stdin instead of spawning a child */
+  const pasteRef = useRef<{ proc: any; busy: boolean; next: ((out: string) => void) | null } | null>(null);
+  useEffect(() => {
+    if (!stdout.isTTY) return;
+    const { spawn } = require("node:child_process");
+    /** -File (no -WindowStyle/-STA): single persistent process, no console churn mid-session */
+    const proc = spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", join(distScriptsPath(), "clipboard-watcher.ps1")], { stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
+    let buf = "";
+    pasteRef.current = { proc, busy: false, next: null };
+    proc.stdout.on("data", (d: Buffer) => {
+      buf += d.toString();
+      const nl = buf.indexOf("\n");
+      if (nl === -1) return;
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      const cb = pasteRef.current?.next ?? null;
+      if (pasteRef.current) pasteRef.current.next = null;
+      cb?.(line);
+    });
+    return () => { try { proc.stdin.write("close\n"); proc.kill(); } catch {} };
+  }, [stdout]);
   /** save mode armed by Ctrl+S (input non-empty): next digit 1-5 stores input */
   const [quickSave, setQuickSave] = useState(false);
   /** token stats: ref is the source of truth (persistSession from stale closures still writes current data) */
@@ -799,6 +824,25 @@ const roleLabel = (r: string) => (r === "user" ? "› YOU:" : r === "system" ? "
       return;
     }
     if (quickOpen && (key.escape || key.return)) { setQuickOpen(false); return; }
+    /** Ctrl+V: grab clipboard image via the persistent watcher → save PNG in .tokoder/tmp → paste path chip into input */
+    if (key.ctrl && char === "v" && !busy && !wizard && !pendingTool && !pendingAccess) {
+      const p = pasteRef.current;
+      if (!p || p.busy) return;
+      p.busy = true;
+      setPasteBusy(true);
+      const file = join(process.cwd(), ".tokoder", "tmp", `clipboard-${Date.now()}.png`);
+      p.next = (out: string) => {
+        p.busy = false;
+        setPasteBusy(false);
+        const m = out.match(/^(\d+)x(\d+) (.+)$/);
+        if (!m) { pushSystem("Clipboard has no image - copy one first (Win+Shift+S / PrtScr)."); return; }
+        const rel = `.tokoder/tmp/${file.split(/[\\/]/).pop()}`;
+        setInput((s) => (s ? s + " " : "") + `[image: ${rel} ${m[1]}x${m[2]}] `);
+        pushSystem(`+ Image from clipboard: ${rel} (${m[1]}x${m[2]}) - sent to model as file path; use read tool or keep in prompt.`);
+      };
+      p.proc.stdin.write(`${file}\n`);
+      return;
+    }
     if (key.escape && busy && abortRef.current && !accessRef.current && !approvalRef.current) { abortRef.current.abort(); pushSystem("STOP Aborting..."); return; }
     if (key.escape) { setWizard(null); setHistIdx(-1); pushSystem("Cancelled (Esc - exit only via :exit)."); return; }
     if (key.ctrl && char === "c") exit();

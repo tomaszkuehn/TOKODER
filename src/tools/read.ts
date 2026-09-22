@@ -8,6 +8,8 @@ export const readSchema = z.object({
   limit: z.number().optional().describe("Max lines"),
 });
 
+const IMG_EXT = /\.(png|jpe?g|gif|webp|bmp)$/i;
+
 export async function readTool({ path, offset, limit }: z.infer<typeof readSchema>) {
   const chk = checkAccess(path, "read");
   if (!chk.ok) return chk.reason === "system"
@@ -19,6 +21,11 @@ export async function readTool({ path, offset, limit }: z.infer<typeof readSchem
       const { readdir } = await import("node:fs/promises");
       const entries = await readdir(path, { withFileTypes: true });
       return entries.map((e) => (e.isDirectory() ? `${e.name}/` : e.name)).join("\n");
+    }
+    if (IMG_EXT.test(path)) {
+      const { imageSize } = await import("./image-size.js");
+      const info = await imageSize(path);
+      return `Image file: ${path} (${info.w}x${info.h} px, ${(s.size / 1024).toFixed(1)} KB, ${info.ext}). NOTE: this agent reads image metadata only - image content reaches the model only if it supports vision; ask the user to describe the image if needed.`;
     }
     const content = await readFile(path, "utf-8");
     const lines = content.split("\n");

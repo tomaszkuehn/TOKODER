@@ -11,7 +11,7 @@
     "scripts": {
         "dev": "tsx src/cli.ts",
         "dev:all": "tsx src/cli.ts --all",
-        "build": "tsc",
+        "build": "tsc && node -e \"const fs=require('fs');fs.mkdirSync('dist/scripts',{recursive:true});fs.copyFileSync('scripts/paste-image.ps1','dist/scripts/paste-image.ps1');fs.copyFileSync('scripts/clipboard-watcher.ps1','dist/scripts/clipboard-watcher.ps1')\"",
         "start": "node dist/cli.js",
         "models": "node dist/cli.js models",
         "tokoder": "node dist/cli.js",
